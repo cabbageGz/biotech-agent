@@ -1,0 +1,24 @@
+[project]
+name = "biotech-agent"
+version = "0.1.0"
+description = "Daily biotech intelligence agent for research, Xiaohongshu content, and publishing workflows."
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agents*", "api*", "tools*", "workflows*"]
+
+[project.scripts]
+biotech-agent = "api.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

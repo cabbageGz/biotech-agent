@@ -1,0 +1,34 @@
+[
+  {
+    "name": "Fierce Biotech",
+    "url": "https://www.fiercebiotech.com/rss/xml"
+  },
+  {
+    "name": "Endpoints News",
+    "url": "https://endpts.com/feed/"
+  },
+  {
+    "name": "BioPharma Dive",
+    "url": "https://www.biopharmadive.com/feeds/news/"
+  },
+  {
+    "name": "Fierce Pharma",
+    "url": "https://www.fiercepharma.com/rss/xml"
+  },
+  {
+    "name": "Nature Biotechnology",
+    "url": "https://www.nature.com/nbt.rss"
+  },
+  {
+    "name": "BioSpace",
+    "url": "https://www.biospace.com/rss-feeds"
+  },
+  {
+    "name": "GEN News",
+    "url": "https://www.genengnews.com/feed/"
+  },
+  {
+    "name": "PharmaTimes",
+    "url": "https://www.pharmatimes.com/rss/news"
+  }
+]

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Biotech Agent Console</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">BA</div>
+          <div>
+            <h1>Biotech Agent</h1>
+            <p>行业情报控制台</p>
+          </div>
+        </div>
+        <button id="refreshRuns" class="secondary" type="button">刷新记录</button>
+        <button id="clearRuns" class="secondary" type="button">删除任务记录</button>
+        <div id="runList" class="run-list"></div>
+      </aside>
+
+      <main class="workspace">
+        <section class="topbar">
+          <div>
+            <p class="eyebrow">CEO -> Research -> Content</p>
+            <h2>小红书生物医药热点</h2>
+          </div>
+          <div id="statusPill" class="status-pill">Ready</div>
+        </section>
+
+        <section class="composer">
+          <label for="topicInput">今日选题提示</label>
+          <div class="input-row">
+            <input id="topicInput" type="text" placeholder="可选：ADC、AI 制药、出海授权、肿瘤临床进展" />
+            <button id="runFlow" class="primary" type="button">获取新闻并生成</button>
+          </div>
+          <div class="settings-row">
+            <label>新闻数 <input id="maxItems" type="number" min="5" max="60" value="24" /></label>
+            <label>热点数 <input id="maxHotspots" type="number" min="3" max="10" value="6" /></label>
+          </div>
+        </section>
+
+        <section class="cards">
+          <div class="metric">
+            <span>抓取新闻</span>
+            <strong id="totalItems">-</strong>
+          </div>
+          <div class="metric">
+            <span>热点条目</span>
+            <strong id="hotspotCount">-</strong>
+          </div>
+          <div class="metric">
+            <span>运行编号</span>
+            <strong id="runId">-</strong>
+          </div>
+        </section>
+
+        <section class="tabs">
+          <button class="tab active" data-tab="post" type="button">发布文案</button>
+          <button class="tab" data-tab="cover" type="button">封面图</button>
+          <button class="tab" data-tab="research" type="button">研究摘要</button>
+          <button class="tab" data-tab="brief" type="button">CEO Brief</button>
+          <button class="tab" data-tab="json" type="button">JSON</button>
+        </section>
+
+        <section class="output">
+          <div id="coverActions" class="cover-actions" hidden>
+            <button id="generateCover" class="primary" type="button">根据正文生成封面</button>
+          </div>
+          <div id="coverView" class="cover-view" hidden></div>
+          <pre id="outputView">点击“获取新闻并生成”开始第一轮内容生产。</pre>
+        </section>
+      </main>
+    </div>
+    <div id="toast" class="toast"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

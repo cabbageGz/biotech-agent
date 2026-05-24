@@ -1,0 +1,79 @@
+[
+  {
+    "name": "PubMed",
+    "kind": "api",
+    "status": "implemented",
+    "priority": 1,
+    "notes": "NCBI Entrez E-utilities. Good for papers, reviews, clinical findings, mechanisms, and translational science."
+  },
+  {
+    "name": "ClinicalTrials.gov",
+    "kind": "api",
+    "status": "implemented",
+    "priority": 1,
+    "notes": "ClinicalTrials.gov API v2. Good for trial status changes, phases, sponsors, indications, and enrollment signals."
+  },
+  {
+    "name": "FDA / openFDA",
+    "kind": "api",
+    "status": "implemented",
+    "priority": 1,
+    "notes": "openFDA drug endpoints. Good for approvals, labels, recalls, and safety/regulatory context."
+  },
+  {
+    "name": "Nature Biotechnology",
+    "kind": "rss",
+    "status": "implemented",
+    "priority": 2,
+    "notes": "Nature Portfolio RSS. Good for research and biotech trend scanning."
+  },
+  {
+    "name": "BioPharma Dive",
+    "kind": "rss",
+    "status": "implemented",
+    "priority": 2,
+    "notes": "Industry news RSS. Good for deals, clinical milestones, pharma strategy, and commercial signals."
+  },
+  {
+    "name": "Fierce Biotech / Fierce Pharma",
+    "kind": "rss",
+    "status": "implemented",
+    "priority": 2,
+    "notes": "Industry news RSS. Good for biotech financing, deals, layoffs, clinical and commercial news."
+  },
+  {
+    "name": "BioSpace",
+    "kind": "rss",
+    "status": "implemented",
+    "priority": 3,
+    "notes": "Company news, hiring, financing, and press release flow."
+  },
+  {
+    "name": "丁香园 / Insight",
+    "kind": "commercial_or_web",
+    "status": "planned",
+    "priority": 2,
+    "notes": "Recommended for China medical/pharma context. Needs authorized API, account-based access, or compliant scraper."
+  },
+  {
+    "name": "药明康德",
+    "kind": "company",
+    "status": "planned",
+    "priority": 3,
+    "notes": "Can track investor relations, official news, exchange announcements, and earnings reports."
+  },
+  {
+    "name": "医药魔方",
+    "kind": "commercial_api",
+    "status": "planned",
+    "priority": 1,
+    "notes": "Highly relevant China pharma intelligence. Open platform exists; integration needs API credentials and data contract."
+  },
+  {
+    "name": "企业财报",
+    "kind": "filings",
+    "status": "planned",
+    "priority": 2,
+    "notes": "Recommended sources: SEC EDGAR for US-listed companies, HKEX/SSE/SZSE for China/HK, and company IR pages."
+  }
+]
