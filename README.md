@@ -73,3 +73,25 @@ database/runs/<run_id>/
 ├── xiaohongshu_post.md
 └── run.json
 ```
+
+## 用户与部署数据
+
+用户、密码哈希、登录会话和使用统计保存在 SQLite：
+
+```text
+database/app.db
+```
+
+默认管理员：
+
+```text
+username: admin
+password: 712834
+```
+
+后续部署到服务器时，建议把 `database/` 作为持久化目录挂载或一起备份：
+
+- `database/app.db`：用户、权限、统计。
+- `database/runs/`：每次生成的文案、研究摘要和图片文件。
+
+代码更新时不要覆盖这两个生产数据目录。

@@ -36,12 +36,14 @@ class RunStorage:
         (run_dir / "run.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return payload
 
-    def list_runs(self) -> list[dict[str, Any]]:
+    def list_runs(self, user_id: int | None = None) -> list[dict[str, Any]]:
         runs = []
         for run_dir in sorted(self.root.iterdir(), reverse=True):
             meta_path = run_dir / "run.json"
             if run_dir.is_dir() and meta_path.exists():
-                runs.append(json.loads(meta_path.read_text(encoding="utf-8")))
+                payload = json.loads(meta_path.read_text(encoding="utf-8"))
+                if user_id is None or payload.get("user_id") == user_id:
+                    runs.append(payload)
         return runs
 
     def read_run(self, run_id: str) -> dict[str, Any]:
@@ -55,10 +57,17 @@ class RunStorage:
                 payload["file_contents"][filename] = path.read_text(encoding="utf-8")
         return payload
 
-    def clear_runs(self) -> int:
+    def clear_runs(self, user_id: int | None = None) -> int:
         removed = 0
         for run_dir in self.root.iterdir():
             if run_dir.is_dir():
+                if user_id is not None:
+                    meta_path = run_dir / "run.json"
+                    if not meta_path.exists():
+                        continue
+                    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+                    if payload.get("user_id") != user_id:
+                        continue
                 shutil.rmtree(run_dir)
                 removed += 1
         return removed

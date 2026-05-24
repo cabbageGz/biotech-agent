@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>用户管理 · Biotech Agent</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main class="admin-page">
+      <section class="topbar admin-topbar">
+        <div>
+          <p class="eyebrow">Admin</p>
+          <h2>用户管理</h2>
+          <p class="muted-copy">创建账号、查看每位用户生成的热点条目和图片次数。</p>
+        </div>
+        <a class="secondary nav-link" href="/">返回控制台</a>
+      </section>
+      <section class="admin-grid">
+        <form class="composer admin-form">
+          <div class="panel-title">
+            <div>
+              <strong>新增用户</strong>
+              <p>密码会以哈希形式存入本地 SQLite。</p>
+            </div>
+          </div>
+          <label>
+            <span>用户名</span>
+            <input id="newUsername" class="wide-input" type="text" placeholder="例如 analyst01" />
+          </label>
+          <label>
+            <span>密码</span>
+            <input id="newPassword" class="wide-input" type="password" placeholder="输入初始密码" />
+          </label>
+          <label>
+            <span>角色</span>
+            <select id="newRole" class="select-input wide-input">
+              <option value="user">普通用户</option>
+              <option value="admin">管理员</option>
+            </select>
+          </label>
+          <button id="createUser" class="primary" type="button">新增用户</button>
+          <p id="adminMessage" class="form-message"></p>
+        </form>
+        <section class="output admin-table-panel">
+          <div class="panel-title">
+            <div>
+              <strong>用户统计</strong>
+              <p>统计从当前账号体系启用后开始累计。</p>
+            </div>
+          </div>
+          <div id="users" class="user-list"></div>
+        </section>
+      </section>
+    </main>
+    <script src="/admin.js"></script>
+  </body>
+</html>

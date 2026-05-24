@@ -51,8 +51,9 @@ class WanxiangClient:
     def available(self) -> bool:
         return bool(self.api_key)
 
-    def generate(self, prompt: str, output_path: Path) -> CoverImage:
-        cover = CoverImage(prompt=prompt, model=self.model, size=self.size)
+    def generate(self, prompt: str, output_path: Path, size: str | None = None) -> CoverImage:
+        image_size = size or self.size
+        cover = CoverImage(prompt=prompt, model=self.model, size=image_size)
         if not self.api_key:
             cover.error = "DASHSCOPE_API_KEY is not configured"
             return cover
@@ -68,7 +69,7 @@ class WanxiangClient:
                 ]
             },
             "parameters": {
-                "size": self.size,
+                "size": image_size,
                 "n": 1,
             },
         }

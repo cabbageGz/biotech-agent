@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>登录 · Biotech Agent</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body class="auth-page">
+    <main class="auth-card">
+      <div class="brand">
+        <div class="brand-mark">BA</div>
+        <div>
+          <h1>Biotech Agent</h1>
+          <p>登录后继续使用</p>
+        </div>
+      </div>
+      <label for="username">用户名</label>
+      <input id="username" class="wide-input" autocomplete="username" value="admin" />
+      <label for="password">密码</label>
+      <input id="password" class="wide-input" type="password" autocomplete="current-password" />
+      <button id="login" class="primary full-button" type="button">登录</button>
+      <p id="loginMessage" class="form-message"></p>
+    </main>
+    <script src="/login.js"></script>
+  </body>
+</html>

@@ -18,6 +18,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser("run-once", help="Generate one Xiaohongshu biotech hotspot post.")
     run_parser.add_argument("--topic", default="", help="Optional topic hint, such as ADC or AI 制药.")
+    run_parser.add_argument("--reference-url", default="", help="Optional Xiaohongshu note URL to learn style from.")
+    run_parser.add_argument("--content-words", default=700, type=int, help="Approximate Chinese body length.")
+    run_parser.add_argument("--content-instruction", default="", help="Optional custom content instruction.")
+    run_parser.add_argument("--format-reference", default="", help="Optional custom output format reference.")
 
     schedule_parser = subparsers.add_parser("schedule", help="Run the daily workflow in a long-lived loop.")
     schedule_parser.add_argument("--time", default="08:30", help="Daily run time in HH:MM. Defaults to 08:30.")
@@ -34,7 +38,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "run-once":
-        payload = XiaohongshuDailyFlow(storage=RunStorage(Path("database/runs"))).run(topic_hint=args.topic)
+        payload = XiaohongshuDailyFlow(storage=RunStorage(Path("database/runs"))).run(
+            topic_hint=args.topic,
+            reference_url=args.reference_url,
+            content_words=args.content_words,
+            content_instruction=args.content_instruction,
+            format_reference=args.format_reference,
+        )
         print(f"Generated run: database/runs/{payload['run_id']}")
         print(f"Post: database/runs/{payload['run_id']}/xiaohongshu_post.md")
         return 0

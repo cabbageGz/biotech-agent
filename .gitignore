@@ -5,3 +5,5 @@ __pycache__/
 .env
 database/runs/
 database/console-screenshot.png
+database/app.db
+database/app.db-*
