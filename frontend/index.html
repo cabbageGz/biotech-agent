@@ -19,6 +19,13 @@
         <div class="sidebar-actions">
           <button id="clearRuns" class="secondary" type="button">删除任务记录</button>
           <a id="adminLink" class="secondary nav-link" href="/admin.html" hidden>用户管理</a>
+          <button id="togglePassword" class="secondary" type="button">修改密码</button>
+          <div id="passwordPanel" class="password-panel" hidden>
+            <input id="currentPassword" type="password" placeholder="当前密码" />
+            <input id="newPassword" type="password" placeholder="新密码，至少 6 位" />
+            <button id="changePassword" class="primary" type="button">保存新密码</button>
+            <p id="passwordMessage" class="form-message"></p>
+          </div>
           <button id="logout" class="secondary" type="button">退出登录</button>
         </div>
         <div class="sidebar-title">运行记录</div>
@@ -38,12 +45,12 @@
           <div class="panel-title">
             <div>
               <strong>生成设置</strong>
-              <p>先定义选题和内容风格，再抓取新闻生成多条发布文案。</p>
+              <p>先定义选题和抓取范围，再聚类排序；文案要求在热点卡片中设置。</p>
             </div>
-            <button id="runFlow" class="primary" type="button">获取新闻并生成</button>
+            <button id="runFlow" class="primary" type="button">获取新闻并排序</button>
           </div>
           <div class="field-grid">
-            <label for="topicInput">
+            <label class="wide-field" for="topicInput">
               <span>今日选题提示</span>
               <textarea
                 id="topicInput"
@@ -52,39 +59,20 @@
                 placeholder="可选：ADC、AI 制药、出海授权、肿瘤临床进展"
               ></textarea>
             </label>
-            <label for="contentInstruction">
-              <span>内容要求</span>
-              <textarea
-                id="contentInstruction"
-                class="wide-textarea"
-                rows="3"
-                placeholder="可选：偏科普、偏投融资、每条加一句小科普、避免英文缩写等"
-              ></textarea>
-            </label>
-            <label class="wide-field" for="formatReference">
-              <span>格式参考</span>
-              <textarea
-                id="formatReference"
-                class="wide-textarea"
-                rows="4"
-                placeholder="可选：定义每条文案格式。例如：标题：...；开头：...；正文分三段：一句话/为什么重要/小科普；结尾：..."
-              ></textarea>
-            </label>
           </div>
           <div class="settings-row">
-            <label>新闻数 <input id="maxItems" type="number" min="5" max="60" value="24" /></label>
-            <label>热点数 <input id="maxHotspots" type="number" min="3" max="10" value="6" /></label>
-            <label>内容字数 <input id="contentWords" type="number" min="200" max="2000" value="700" /></label>
+            <label>新闻抓取上限 <input id="maxItems" type="number" min="5" max="60" value="24" /></label>
+            <label>候选主题上限 <input id="maxHotspots" type="number" min="3" max="10" value="6" /></label>
           </div>
         </section>
 
         <section class="cards">
           <div class="metric">
-            <span>抓取新闻</span>
+            <span>新闻条目</span>
             <strong id="totalItems">-</strong>
           </div>
           <div class="metric">
-            <span>热点条目</span>
+            <span>候选主题</span>
             <strong id="hotspotCount">-</strong>
           </div>
           <div class="metric">
@@ -96,10 +84,10 @@
         <section class="tabs">
           <button class="tab active" data-tab="post" type="button">发布文案</button>
           <button class="tab" data-tab="hotspots" type="button">热点卡片</button>
+          <button class="tab" data-tab="news" type="button">新闻清单</button>
           <button class="tab" data-tab="cover" type="button">封面图</button>
+          <button class="tab" data-tab="publish" type="button">发布预览</button>
           <button class="tab" data-tab="research" type="button">研究摘要</button>
-          <button class="tab" data-tab="brief" type="button">CEO Brief</button>
-          <button class="tab" data-tab="json" type="button">JSON</button>
         </section>
 
         <section class="output">
@@ -117,16 +105,44 @@
                 </select>
               </label>
             </div>
-            <textarea
-              id="imageInstruction"
-              class="wide-textarea"
-              rows="2"
-              placeholder="可选：图片风格要求，例如清爽白底、研报风、少文字、只保留标题和标签、突出机制示意等"
-            ></textarea>
+          </div>
+          <div id="writingSettings" class="writing-settings" hidden>
+            <div class="panel-title compact-title">
+              <div>
+                <strong>文案生成设置</strong>
+                <p>选择热点后，DeepSeek 会参考这里的要求生成发布文案。</p>
+              </div>
+              <label>
+                正文字数
+                <input id="contentWords" type="number" min="200" max="2000" value="700" />
+              </label>
+            </div>
+            <div class="field-grid">
+              <label for="contentInstruction">
+                <span>内容要求</span>
+                <textarea
+                  id="contentInstruction"
+                  class="wide-textarea"
+                  rows="3"
+                  placeholder="可选：偏科普、偏投融资、每条加一句小科普、避免英文缩写等"
+                ></textarea>
+              </label>
+              <label for="formatReference">
+                <span>格式参考</span>
+                <textarea
+                  id="formatReference"
+                  class="wide-textarea"
+                  rows="3"
+                  placeholder="可选：定义每条文案格式，例如一句话/为什么重要/小科普/结尾提醒"
+                ></textarea>
+              </label>
+            </div>
           </div>
           <div id="hotspotView" class="hotspot-view" hidden></div>
+          <div id="newsView" class="news-view" hidden></div>
+          <div id="publishView" class="publish-view" hidden></div>
           <div id="coverView" class="cover-view" hidden></div>
-          <pre id="outputView">点击“获取新闻并生成”开始第一轮内容生产。</pre>
+          <pre id="outputView">点击“获取新闻并排序”开始第一轮选题分析。</pre>
         </section>
       </main>
     </div>

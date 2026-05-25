@@ -26,6 +26,13 @@ class FakeRSSReader:
                 source="Example Bio",
                 published="2026-05-24",
             ),
+            RSSItem(
+                title="Old biotech financing story from 2024",
+                link="https://example.com/old-story",
+                summary="This stale item should not be used for today's topic selection.",
+                source="Example Bio",
+                published="2024-05-24",
+            ),
         ], []
 
 
@@ -54,7 +61,16 @@ class XiaohongshuFlowTest(unittest.TestCase):
             self.assertTrue((run_dir / "research_report.md").exists())
             self.assertTrue((run_dir / "xiaohongshu_post.md").exists())
             self.assertEqual(payload["research"]["total_items"], 2)
-            self.assertTrue(payload["post"]["hashtags"])
+            self.assertEqual(len(payload["research"]["source_items"]), 2)
+            self.assertEqual(payload["item_posts"], [])
+            self.assertIn("total_score", payload["research"]["hotspots"][0])
+            payload = flow.generate_posts_for_run(payload["run_id"], indices=[0])
+            self.assertTrue(payload["item_posts"][0]["hashtags"])
+            self.assertEqual(len(payload["item_covers"]), 1)
+            self.assertEqual(payload["item_covers"][0]["source_index"], 0)
+            payload = flow.generate_cover_prompts_for_run(payload["run_id"], index=0, image_size="1024*1024")
+            self.assertTrue(payload["item_covers"][0]["prompt_options"])
+            self.assertIn("文字", payload["item_covers"][0]["prompt"])
             self.assertIn(
                 "不构成医疗或投资建议",
                 (run_dir / "xiaohongshu_post.md").read_text(encoding="utf-8"),

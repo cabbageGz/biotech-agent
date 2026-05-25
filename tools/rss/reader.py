@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,7 @@ class RSSReader:
         self.sources_path = sources_path or DEFAULT_SOURCES_PATH
         self.timeout = timeout
 
-    def fetch_many(self, max_items: int = 24) -> tuple[list[RSSItem], list[str]]:
+    def fetch_many(self, max_items: int = 24, max_age_days: int = 14) -> tuple[list[RSSItem], list[str]]:
         sources = self._load_sources()
         items: list[RSSItem] = []
         errors: list[str] = []
@@ -40,7 +41,8 @@ class RSSReader:
             except Exception as exc:  # Keep the daily run alive if one source breaks.
                 errors.append(f"{source.get('name', 'unknown')}: {exc}")
         deduped = self._dedupe(items)
-        return deduped[:max_items], errors
+        recent = self._recent_first(deduped, max_age_days=max_age_days)
+        return recent[:max_items], errors
 
     def fetch_source(self, source: dict[str, Any]) -> list[RSSItem]:
         name = str(source["name"])
@@ -127,6 +129,43 @@ class RSSReader:
             if item.title:
                 result.append(item)
         return result
+
+    def _recent_first(self, items: list[RSSItem], max_age_days: int) -> list[RSSItem]:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        dated: list[tuple[datetime, RSSItem]] = []
+        unknown: list[RSSItem] = []
+        for item in items:
+            parsed = self._parse_datetime(item.published)
+            if parsed is None:
+                unknown.append(item)
+                continue
+            if parsed >= cutoff:
+                dated.append((parsed, item))
+        dated.sort(key=lambda pair: pair[0], reverse=True)
+        # Keep a very small number of undated RSS items only as a fallback, and
+        # always place them after verified recent items.
+        unknown_limit = max(0, min(3, len(dated) // 4))
+        return [item for _, item in dated] + unknown[:unknown_limit]
+
+    def _parse_datetime(self, value: str) -> datetime | None:
+        text = value.strip()
+        if not text:
+            return None
+        normalized = text.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            pass
+        try:
+            parsed = parsedate_to_datetime(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except (TypeError, ValueError, IndexError):
+            return None
 
     def _load_sources(self) -> list[dict[str, Any]]:
         return json.loads(self.sources_path.read_text(encoding="utf-8"))

@@ -23,9 +23,10 @@ class ConsoleApp:
         self.auth = AuthStore(ROOT / "database" / "app.db")
 
     def status(self, user: dict[str, object]) -> dict[str, object]:
+        user_id = None if user.get("role") == "admin" else int(user["id"])
         return {
             "ok": True,
-            "runs": len(self.storage.list_runs(user_id=int(user["id"]))),
+            "runs": len(self.storage.list_runs(user_id=user_id)),
             "sources": str(ROOT / "tools" / "rss" / "sources.json"),
         }
 
@@ -56,22 +57,84 @@ class ConsoleApp:
 
     def generate_cover(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
-        if run.get("user_id") != int(user["id"]):
+        if not self.can_access_run(run, user):
             raise PermissionError("Forbidden")
         index = body.get("index")
         image_size = str(body.get("image_size") or "")
         image_instruction = str(body.get("image_instruction") or "")
+        prompt_index = body.get("prompt_index")
         payload = self.flow.generate_cover_for_run(
             run_id,
             index=int(index) if index is not None else None,
             image_size=image_size,
             image_instruction=image_instruction,
+            prompt_index=int(prompt_index) if prompt_index is not None else None,
         )
         if index is not None:
             cover = payload.get("item_covers", [])[int(index)]
             if cover.get("asset") and not cover.get("error"):
                 self.auth.increment_images(int(user["id"]))
         return payload
+
+    def generate_cover_prompts(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
+        run = self.storage.read_run(run_id)
+        if not self.can_access_run(run, user):
+            raise PermissionError("Forbidden")
+        index = body.get("index")
+        if index is None:
+            raise ValueError("Missing cover index")
+        return self.flow.generate_cover_prompts_for_run(
+            run_id,
+            index=int(index),
+            image_size=str(body.get("image_size") or ""),
+            image_instruction=str(body.get("image_instruction") or ""),
+        )
+
+    def generate_posts(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
+        run = self.storage.read_run(run_id)
+        if not self.can_access_run(run, user):
+            raise PermissionError("Forbidden")
+        raw_indices = body.get("indices", [])
+        indices = [int(index) for index in raw_indices] if isinstance(raw_indices, list) else []
+        payload = self.flow.generate_posts_for_run(
+            run_id,
+            indices=indices,
+            content_options={
+                "content_words": int(body.get("content_words") or 700),
+                "content_instruction": str(body.get("content_instruction") or ""),
+                "format_reference": str(body.get("format_reference") or ""),
+            },
+        )
+        self.auth.increment_hotspots(int(user["id"]), len(indices))
+        return payload
+
+    def publish_package(self, run_id: str, user: dict[str, object]) -> dict[str, object]:
+        run = self.storage.read_run(run_id)
+        if not self.can_access_run(run, user):
+            raise PermissionError("Forbidden")
+        return self.flow.package_publish_for_run(run_id)
+
+    def export_publish(self, run_id: str, user: dict[str, object]) -> dict[str, object]:
+        run = self.storage.read_run(run_id)
+        if not self.can_access_run(run, user):
+            raise PermissionError("Forbidden")
+        return self.flow.export_publish_for_run(run_id)
+
+    def delete_cover_image(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
+        run = self.storage.read_run(run_id)
+        if not self.can_access_run(run, user):
+            raise PermissionError("Forbidden")
+        return self.flow.delete_cover_image_for_run(
+            run_id,
+            index=int(body.get("index") or 0),
+            asset=str(body.get("asset") or ""),
+        )
+
+    def can_access_run(self, run: dict[str, object], user: dict[str, object]) -> bool:
+        return user.get("role") == "admin" or run.get("user_id") == int(user["id"])
+
+    def visible_run_user_id(self, user: dict[str, object]) -> int | None:
+        return None if user.get("role") == "admin" else int(user["id"])
 
 
 def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
@@ -87,6 +150,12 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
         def do_POST(self) -> None:
             try:
                 self._handle_post()
+            except FileNotFoundError as exc:
+                self._json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            except ValueError as exc:
+                self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except PermissionError as exc:
+                self._json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
             except Exception as exc:
                 self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -137,7 +206,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
                 self._json(app.status(user))
                 return
             if path == "/api/runs":
-                self._json({"runs": app.storage.list_runs(user_id=int(user["id"]))})
+                self._json({"runs": app.storage.list_runs(user_id=app.visible_run_user_id(user))})
                 return
             if path.startswith("/api/runs/"):
                 rest = path.removeprefix("/api/runs/").strip("/")
@@ -147,7 +216,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
                     return
                 run_id = rest
                 run = app.storage.read_run(run_id)
-                if run.get("user_id") != int(user["id"]):
+                if not app.can_access_run(run, user):
                     self._json({"error": "Forbidden"}, status=HTTPStatus.FORBIDDEN)
                     return
                 self._json(run)
@@ -169,12 +238,34 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
                 app.auth.delete_session(self._session_token())
                 self._json({"ok": True}, cookie="session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0")
                 return
+            if parsed.path == "/api/me/password":
+                user = self._require_user()
+                if not user:
+                    return
+                body = self._read_json()
+                app.auth.change_password(
+                    int(user["id"]),
+                    current_password=str(body.get("current_password") or ""),
+                    new_password=str(body.get("new_password") or ""),
+                    keep_token=self._session_token(),
+                )
+                self._json({"ok": True})
+                return
             if parsed.path == "/api/admin/users":
                 user = self._require_admin()
                 if not user:
                     return
                 body = self._read_json()
                 self._json({"user": app.auth.create_user(str(body.get("username") or ""), str(body.get("password") or ""), str(body.get("role") or "user"))})
+                return
+            if parsed.path.startswith("/api/admin/users/") and parsed.path.endswith("/password"):
+                user = self._require_admin()
+                if not user:
+                    return
+                user_id = int(unquote(parsed.path.removeprefix("/api/admin/users/").removesuffix("/password").strip("/")))
+                body = self._read_json()
+                app.auth.reset_password(user_id, str(body.get("new_password") or ""))
+                self._json({"ok": True})
                 return
             user = self._require_user()
             if not user:
@@ -188,6 +279,26 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
             if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/cover"):
                 run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/cover").strip("/"))
                 self._json(app.generate_cover(run_id, self._read_json(), user))
+                return
+            if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/cover-image/delete"):
+                run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/cover-image/delete").strip("/"))
+                self._json(app.delete_cover_image(run_id, self._read_json(), user))
+                return
+            if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/cover-prompts"):
+                run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/cover-prompts").strip("/"))
+                self._json(app.generate_cover_prompts(run_id, self._read_json(), user))
+                return
+            if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/publish/export"):
+                run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/publish/export").strip("/"))
+                self._json(app.export_publish(run_id, user))
+                return
+            if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/publish"):
+                run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/publish").strip("/"))
+                self._json(app.publish_package(run_id, user))
+                return
+            if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/posts"):
+                run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/posts").strip("/"))
+                self._json(app.generate_posts(run_id, self._read_json(), user))
                 return
             self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -225,7 +336,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
 
         def _run_asset(self, run_id: str, filename: str, user: dict[str, object]) -> None:
             run = app.storage.read_run(run_id)
-            if run.get("user_id") != int(user["id"]):
+            if not app.can_access_run(run, user):
                 self._json({"error": "Forbidden"}, status=HTTPStatus.FORBIDDEN)
                 return
             target = (ROOT / "database" / "runs" / run_id / filename).resolve()
@@ -238,6 +349,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
                 ".jpg": "image/jpeg",
                 ".jpeg": "image/jpeg",
                 ".webp": "image/webp",
+                ".zip": "application/zip",
             }.get(target.suffix.lower(), "application/octet-stream")
             data = target.read_bytes()
             self.send_response(HTTPStatus.OK)

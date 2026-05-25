@@ -204,6 +204,9 @@ class ContentAgent:
                     publish_notes=[str(note) for note in item.get("publish_notes", []) if str(note).strip()],
                 ).cleaned()
             )
+        if posts and len(posts) < len(report.hotspots):
+            for index, item in enumerate(report.hotspots[len(posts):], start=len(posts) + 1):
+                posts.append(self._fallback_post_for_hotspot(item, index))
         return posts or [self._fallback_post_for_hotspot(item, index) for index, item in enumerate(report.hotspots, start=1)]
 
     def _short_title(self, text: str) -> str:

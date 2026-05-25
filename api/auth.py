@@ -126,6 +126,13 @@ class AuthStore:
         with self._connect() as conn:
             conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
 
+    def delete_user_sessions(self, user_id: int, keep_token: str = "") -> None:
+        with self._connect() as conn:
+            if keep_token:
+                conn.execute("DELETE FROM sessions WHERE user_id = ? AND token != ?", (user_id, keep_token))
+            else:
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
     def user_for_session(self, token: str) -> dict[str, Any] | None:
         if not token:
             return None
@@ -147,6 +154,34 @@ class AuthStore:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return self._public_user(dict(row)) if row else None
+
+    def change_password(self, user_id: int, current_password: str, new_password: str, keep_token: str = "") -> None:
+        if len(new_password) < 6:
+            raise ValueError("新密码至少需要 6 位")
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not row:
+                raise FileNotFoundError("用户不存在")
+            if not self.verify_password(current_password, str(row["password_hash"])):
+                raise ValueError("当前密码不正确")
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (self.hash_password(new_password), user_id),
+            )
+        self.delete_user_sessions(user_id, keep_token=keep_token)
+
+    def reset_password(self, user_id: int, new_password: str) -> None:
+        if len(new_password) < 6:
+            raise ValueError("新密码至少需要 6 位")
+        with self._connect() as conn:
+            exists = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not exists:
+                raise FileNotFoundError("用户不存在")
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (self.hash_password(new_password), user_id),
+            )
+        self.delete_user_sessions(user_id)
 
     def increment_hotspots(self, user_id: int, count: int) -> None:
         with self._connect() as conn:

@@ -38,8 +38,31 @@ async function loadUsers() {
     action.textContent = user.id === currentUser.id ? "当前用户" : "删除";
     action.disabled = user.id === currentUser.id;
     action.addEventListener("click", () => deleteUser(user));
-    row.append(name, role, hotspots, images, action);
+    const reset = document.createElement("button");
+    reset.className = "secondary small-button";
+    reset.type = "button";
+    reset.textContent = "重置密码";
+    reset.addEventListener("click", () => resetPassword(user));
+    const actions = document.createElement("div");
+    actions.className = "user-actions";
+    actions.append(reset, action);
+    row.append(name, role, hotspots, images, actions);
     users.appendChild(row);
+  }
+}
+
+async function resetPassword(user) {
+  const nextPassword = window.prompt(`输入用户「${user.username}」的新密码（至少 6 位）`);
+  if (!nextPassword) return;
+  message.textContent = "";
+  try {
+    await api(`/api/admin/users/${encodeURIComponent(user.id)}/password`, {
+      method: "POST",
+      body: JSON.stringify({ new_password: nextPassword }),
+    });
+    message.textContent = "密码已重置，该用户其他登录会话已失效。";
+  } catch (error) {
+    message.textContent = error.message;
   }
 }
 

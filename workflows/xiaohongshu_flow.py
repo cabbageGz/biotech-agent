@@ -8,6 +8,9 @@ from typing import Any
 
 from agents.ceo_agent import CEOAgent
 from agents.content_agent import ContentAgent
+from agents.image_agent import ImagePromptGenerator, ImagePromptRanker
+from agents.publish_agent import PublishExporter, PublishPackager
+from agents.research_agent.agent import ResearchReport
 from agents.research_agent import ResearchAgent
 from tools.image import CoverImage, WanxiangClient
 from tools.xhs import XiaohongshuReferenceExtractor
@@ -30,6 +33,10 @@ class XiaohongshuDailyFlow:
         self.ceo_agent = CEOAgent()
         self.research_agent = ResearchAgent()
         self.content_agent = ContentAgent()
+        self.image_prompt_generator = ImagePromptGenerator()
+        self.image_prompt_ranker = ImagePromptRanker()
+        self.publish_packager = PublishPackager()
+        self.publish_exporter = PublishExporter()
         self.image_client = WanxiangClient()
         self.reference_extractor = XiaohongshuReferenceExtractor()
 
@@ -51,22 +58,13 @@ class XiaohongshuDailyFlow:
         brief = self.ceo_agent.create_daily_brief(target_date=target, topic_hint=topic_hint)
         reference = self.reference_extractor.fetch(reference_url or DEFAULT_XHS_REFERENCE_URL)
         report = self.research_agent.collect(max_items=max_items, max_hotspots=max_hotspots)
-        item_posts = self.content_agent.create_posts(
-            report,
-            style_reference=reference.to_dict() if reference else {},
-            content_options={
-                "content_words": content_words,
-                "content_instruction": content_instruction,
-                "format_reference": format_reference,
-            },
-        )
-        post = item_posts[0] if item_posts else self.content_agent.create_post(report)
-        cover_prompt = self._cover_prompt(post=post, report=report)
+        item_posts: list[Any] = []
+        cover_prompt = "请先在热点卡片中选择主题并生成文案，再生成封面图。\n"
         cover = CoverImage(prompt=cover_prompt, model=self.image_client.model, size=self.image_client.size)
         files = {
             "ceo_brief.md": self.ceo_agent.render_markdown(brief),
             "research_report.md": self.research_agent.render_markdown(report),
-            "xiaohongshu_post.md": self.content_agent.render_posts_markdown(item_posts),
+            "xiaohongshu_post.md": "尚未生成发布文案。请在“热点卡片”中选择主题后生成。\n",
             "cover_prompt.md": cover_prompt + "\n",
         }
         payload = {
@@ -81,12 +79,63 @@ class XiaohongshuDailyFlow:
             },
             "brief": brief.to_dict(),
             "research": report.to_dict(),
-            "post": post.to_dict(),
-            "item_posts": [item.to_dict() for item in item_posts],
+            "style_reference": reference.to_dict() if reference else {},
+            "post": {},
+            "item_posts": [],
             "cover": cover.to_dict(),
-            "item_covers": self._empty_item_covers(report.to_dict(), [item.to_dict() for item in item_posts]),
+            "item_covers": self._empty_item_covers(report.to_dict(), []),
         }
         return self.storage.write_run(run_dir=run_dir, payload=payload, files=files)
+
+    def generate_posts_for_run(
+        self,
+        run_id: str,
+        indices: list[int],
+        content_options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        run = self.storage.read_run(run_id)
+        report_payload = run.get("research") or {}
+        hotspots = report_payload.get("hotspots") or []
+        selected_indices = sorted({index for index in indices if 0 <= index < len(hotspots)})
+        if not selected_indices:
+            raise ValueError("请选择至少一个热点主题")
+        selected_hotspots = [hotspots[index] for index in selected_indices]
+        selected_report = ResearchReport(
+            generated_at=str(report_payload.get("generated_at") or ""),
+            total_items=int(report_payload.get("total_items") or len(selected_hotspots)),
+            hotspots=self.research_agent.from_payload({**report_payload, "hotspots": selected_hotspots}).hotspots,
+            source_errors=[str(error) for error in report_payload.get("source_errors", [])],
+        )
+        options = {**(run.get("content_options") or {}), **(content_options or {})}
+        posts = self.content_agent.create_posts(
+            selected_report,
+            style_reference=run.get("style_reference") or {},
+            content_options=options,
+        )
+        existing = [item for item in run.get("item_posts", []) if isinstance(item, dict)]
+        existing_by_index = {int(item.get("source_index", -1)): item for item in existing}
+        for source_index, post in zip(selected_indices, posts):
+            existing_by_index[source_index] = {**post.to_dict(), "source_index": source_index}
+        item_posts = [existing_by_index[index] for index in sorted(existing_by_index)]
+        first_post = item_posts[0] if item_posts else {}
+        selected_lookup = set(selected_indices)
+        updated_hotspots = []
+        for index, hotspot in enumerate(hotspots):
+            if isinstance(hotspot, dict):
+                updated_hotspots.append({**hotspot, "selected": bool(hotspot.get("selected")) or index in selected_lookup})
+        updated_report = {**report_payload, "hotspots": updated_hotspots}
+        item_covers = self._empty_item_covers(updated_report, item_posts)
+        return self.storage.update_run(
+            run_id=run_id,
+            updates={
+                "research": updated_report,
+                "post": first_post,
+                "item_posts": item_posts,
+                "item_covers": item_covers,
+                "content_options": options,
+            },
+            files={"xiaohongshu_post.md": self._render_post_dicts_markdown(item_posts)},
+        )
 
     def generate_cover_for_run(
         self,
@@ -94,6 +143,7 @@ class XiaohongshuDailyFlow:
         index: int | None = None,
         image_size: str | None = None,
         image_instruction: str = "",
+        prompt_index: int | None = None,
     ) -> dict[str, Any]:
         run = self.storage.read_run(run_id)
         run_dir = self.storage.root / run_id
@@ -105,6 +155,7 @@ class XiaohongshuDailyFlow:
                 index=index,
                 image_size=selected_size,
                 image_instruction=image_instruction,
+                prompt_index=prompt_index,
             )
         post_payload = run.get("post") or {}
         report_payload = run.get("research") or {}
@@ -124,6 +175,71 @@ class XiaohongshuDailyFlow:
             files={"cover_prompt.md": cover_prompt + "\n"},
         )
 
+    def package_publish_for_run(self, run_id: str) -> dict[str, Any]:
+        run = self.storage.read_run(run_id)
+        package = self.publish_packager.package(run)
+        return package.to_dict()
+
+    def export_publish_for_run(self, run_id: str) -> dict[str, Any]:
+        run = self.storage.read_run(run_id)
+        package = self.publish_packager.package(run)
+        run_dir = self.storage.root / run_id
+        asset = self.publish_exporter.export_zip(package, run_dir=run_dir)
+        package.export_asset = asset
+        return self.storage.update_run(run_id, updates={"publish_package": package.to_dict()})
+
+    def delete_cover_image_for_run(self, run_id: str, index: int, asset: str) -> dict[str, Any]:
+        run = self.storage.read_run(run_id)
+        run_dir = self.storage.root / run_id
+        item_covers = self._item_covers_from_run(run)
+        if index < 0 or index >= len(item_covers):
+            raise ValueError("Invalid item index")
+        item = item_covers[index]
+        images = [image for image in item.get("images", []) if isinstance(image, dict)]
+        item["images"] = [image for image in images if image.get("asset") != asset]
+        if item.get("asset") == asset:
+            latest = item["images"][-1] if item["images"] else {}
+            item["asset"] = latest.get("asset", "")
+            item["local_path"] = latest.get("local_path", "")
+            item["image_url"] = latest.get("image_url", "")
+        target = (run_dir / asset).resolve()
+        if str(target).startswith(str(run_dir.resolve())) and target.exists():
+            target.unlink()
+        item_covers[index] = item
+        return self.storage.update_run(run_id=run_id, updates={"item_covers": item_covers})
+
+    def generate_cover_prompts_for_run(
+        self,
+        run_id: str,
+        index: int,
+        image_size: str | None = None,
+        image_instruction: str = "",
+    ) -> dict[str, Any]:
+        run = self.storage.read_run(run_id)
+        item_covers = self._item_covers_from_run(run)
+        if index < 0 or index >= len(item_covers):
+            raise ValueError("Invalid item index")
+        selected_size = self._normalize_image_size(image_size)
+        item = item_covers[index]
+        prompt = self._item_cover_prompt(
+            item=item,
+            post=run.get("post") or {},
+            image_size=selected_size,
+            image_instruction=image_instruction,
+        )
+        item_covers[index] = {
+            **item,
+            "prompt": prompt,
+            "model": self.image_client.model,
+            "size": selected_size,
+            "error": "",
+        }
+        return self.storage.update_run(
+            run_id=str(run["run_id"]),
+            updates={"item_covers": item_covers},
+            files={f"item_cover_{index + 1}_prompt.md": prompt + "\n"},
+        )
+
     def _generate_item_cover(
         self,
         run: dict[str, Any],
@@ -131,20 +247,42 @@ class XiaohongshuDailyFlow:
         index: int,
         image_size: str,
         image_instruction: str,
+        prompt_index: int | None = None,
     ) -> dict[str, Any]:
         item_covers = self._item_covers_from_run(run)
         if index < 0 or index >= len(item_covers):
             raise ValueError("Invalid item index")
         item = item_covers[index]
-        prompt = self._item_cover_prompt(
-            item=item,
-            post=run.get("post") or {},
-            image_size=image_size,
-            image_instruction=image_instruction,
-        )
-        filename = f"item_cover_{index + 1}.png"
+        prompt_options = item.get("prompt_options") or []
+        if prompt_index is not None and prompt_options:
+            if prompt_index < 0 or prompt_index >= len(prompt_options):
+                raise ValueError("Invalid prompt index")
+            prompt = str(prompt_options[prompt_index].get("prompt") or "")
+        else:
+            prompt = self._item_cover_prompt(
+                item=item,
+                post=run.get("post") or {},
+                image_size=image_size,
+                image_instruction=image_instruction,
+            )
+        next_image_index = len([image for image in item.get("images", []) if isinstance(image, dict)]) + 1
+        prompt_suffix = prompt_index + 1 if prompt_index is not None else 0
+        filename = f"item_cover_{index + 1}_p{prompt_suffix}_{next_image_index}.png"
         prompt_file = f"item_cover_{index + 1}_prompt.md"
         cover = self.image_client.generate(prompt=prompt, output_path=run_dir / filename, size=image_size)
+        image_record = {
+            "asset": filename if cover.local_path and not cover.error else "",
+            "prompt": prompt,
+            "prompt_index": int(prompt_index or 0),
+            "model": cover.model,
+            "size": cover.size,
+            "image_url": cover.image_url,
+            "local_path": cover.local_path,
+            "error": cover.error,
+        }
+        images = [image for image in item.get("images", []) if isinstance(image, dict)]
+        if image_record["asset"] or image_record["error"]:
+            images.append(image_record)
         item_covers[index] = {
             **item,
             "prompt": prompt,
@@ -153,6 +291,7 @@ class XiaohongshuDailyFlow:
             "image_url": cover.image_url,
             "local_path": cover.local_path,
             "asset": filename if cover.local_path and not cover.error else "",
+            "images": images,
             "error": cover.error,
         }
         return self.storage.update_run(
@@ -208,19 +347,34 @@ class XiaohongshuDailyFlow:
     ) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         posts = item_posts or []
-        for index, item in enumerate(report_payload.get("hotspots", []), start=1):
-            post = posts[index - 1] if index - 1 < len(posts) else {}
+        hotspots = report_payload.get("hotspots", [])
+        for post_index, post in enumerate(posts):
+            if not isinstance(post, dict):
+                continue
+            source_index = int(post.get("source_index", post_index))
+            item = hotspots[source_index] if source_index < len(hotspots) and isinstance(hotspots[source_index], dict) else {}
             result.append(
                 {
-                    "index": index - 1,
-                    "title": str(post.get("title") or item.get("title") or f"热点 {index}"),
+                    "index": len(result),
+                    "source_index": source_index,
+                    "title": str(post.get("title") or item.get("title") or f"热点 {post_index + 1}"),
                     "summary": str(post.get("body") or item.get("summary") or ""),
+                    "post_title": str(post.get("title") or ""),
+                    "post_body": str(post.get("body") or ""),
+                    "hashtags": post.get("hashtags") or [],
+                    "publish_notes": post.get("publish_notes") or [],
                     "why_it_matters": str(item.get("why_it_matters") or ""),
+                    "score_reason": str(item.get("score_reason") or ""),
+                    "total_score": int(item.get("total_score") or 0),
+                    "scores": item.get("scores") or {},
                     "source": str(item.get("source") or ""),
                     "url": str(item.get("url") or ""),
                     "published": str(item.get("published") or ""),
                     "tags": item.get("tags") or [],
+                    "evidence": item.get("evidence") or [],
+                    "prompt_options": [],
                     "prompt": "",
+                    "images": [],
                     "model": self.image_client.model,
                     "size": self.image_client.size,
                     "image_url": "",
@@ -231,23 +385,63 @@ class XiaohongshuDailyFlow:
             )
         return result
 
+    def _render_post_dicts_markdown(self, posts: list[dict[str, Any]]) -> str:
+        if not posts:
+            return "尚未生成发布文案。请在“热点卡片”中选择主题后生成。\n"
+        sections: list[str] = ["# 小红书单条热点发布文案", ""]
+        for index, post in enumerate(posts, start=1):
+            sections.extend(
+                [
+                    f"## {index}. {post.get('title') or '未命名文案'}",
+                    "",
+                    "### 正文",
+                    str(post.get("body") or ""),
+                    "",
+                    "### 标签",
+                    " ".join(str(tag) for tag in post.get("hashtags", [])),
+                    "",
+                    "### 发布备注",
+                    *[f"- {note}" for note in post.get("publish_notes", [])],
+                    "",
+                ]
+            )
+        return "\n".join(sections)
+
     def _item_covers_from_run(self, run: dict[str, Any]) -> list[dict[str, Any]]:
         existing = run.get("item_covers")
         if isinstance(existing, list) and existing:
             hotspots = (run.get("research") or {}).get("hotspots") or []
             posts = run.get("item_posts") or []
+            posts_by_index = {
+                int(post.get("source_index", index)): post
+                for index, post in enumerate(posts)
+                if isinstance(post, dict)
+            }
+            existing_by_source = {
+                int(item.get("source_index", index)): item
+                for index, item in enumerate(existing)
+                if isinstance(item, dict)
+            }
             enriched = []
-            for index, item in enumerate(existing):
-                hotspot = hotspots[index] if index < len(hotspots) and isinstance(hotspots[index], dict) else {}
-                post = posts[index] if index < len(posts) and isinstance(posts[index], dict) else {}
+            for display_index, source_index in enumerate(sorted(posts_by_index)):
+                hotspot = hotspots[source_index] if source_index < len(hotspots) and isinstance(hotspots[source_index], dict) else {}
+                post = posts_by_index.get(source_index, {})
+                item = existing_by_source.get(source_index, {})
                 enriched.append(
                     {
                         **item,
+                        "index": display_index,
+                        "source_index": source_index,
                         "title": post.get("title") or item.get("title") or str(hotspot.get("title") or ""),
                         "summary": post.get("body") or item.get("summary") or str(hotspot.get("summary") or ""),
+                        "post_title": post.get("title") or item.get("post_title") or "",
+                        "post_body": post.get("body") or item.get("post_body") or "",
+                        "hashtags": post.get("hashtags") or item.get("hashtags") or [],
+                        "images": item.get("images") or [],
                         "source": item.get("source") or str(hotspot.get("source") or ""),
                         "url": item.get("url") or str(hotspot.get("url") or ""),
                         "published": item.get("published") or str(hotspot.get("published") or ""),
+                        "evidence": item.get("evidence") or hotspot.get("evidence") or [],
                     }
                 )
             return enriched
@@ -268,9 +462,10 @@ class XiaohongshuDailyFlow:
         source = str(item.get("source") or "公开信息")
         url = str(item.get("url") or "")
         published = str(item.get("published") or "")
-        post_title = str(post.get("title") or "")
+        post_title = str(item.get("post_title") or post.get("title") or "")
         size_text = IMAGE_SIZE_LABELS.get(image_size, "小红书配图")
-        style_text = f"用户图片要求：{image_instruction}。" if image_instruction.strip() else ""
+        user_image_instruction = image_instruction.strip()
+        style_text = f"用户图片要求：{user_image_instruction}。" if user_image_instruction else ""
         display_title = self._short_visual_title(title)
         visual_labels = "、".join(tag_list[:3]) or "行业热点"
         info_blocks = self._visual_info_blocks(title=title, summary=summary, why=why, tags=tag_list)
@@ -283,24 +478,32 @@ class XiaohongshuDailyFlow:
             published=published,
             url=url,
         )
-        return (
+        context = {
+            **item,
+            "title": title,
+            "summary": summary,
+            "why_it_matters": why,
+            "post_title": post_title or item.get("post_title") or title,
+            "post_body": item.get("post_body") or summary,
+            "tags": tag_list,
+            "fact_context": fact_context,
+            "visual_title": display_title,
+            "visual_labels": visual_labels,
+            "visual_info_blocks": info_blocks,
+            "visual_scene": visual_scene,
+        }
+        options = self.image_prompt_generator.generate(
+            context=context,
+            image_size_label=size_text,
+            user_instruction=user_image_instruction,
+            count=5,
+        )
+        ranked = self.image_prompt_ranker.rank(options)
+        item["prompt_options"] = [option.to_dict() for option in ranked]
+        return ranked[0].prompt if ranked else (
             f"为小红书正文中的单条生物医药热点生成一张配图，{size_text}。"
-            "采用少字但有信息结构的医药信息图风格，不要做长文海报，也不要做空洞装饰图。"
-            f"{style_text}"
-            "画面文字白名单："
-            f"主标题「{display_title}」；三个重点信息块「{info_blocks[0]}」「{info_blocks[1]}」「{info_blocks[2]}」；"
-            f"角标/小标签「{visual_labels}」。"
-            "除此之外不要再生成任何正文、段落、数据说明、来源链接、日期、脚注或密集小字。"
-            "每个信息块只放 4-8 个中文字符，整张图中文字总量控制在 45 个中文字符以内。"
-            "画面结构要求：顶部短标题，中间必须有清晰视觉中心，底部或侧边放三个短信息块；"
-            f"视觉中心请表达：{visual_scene}。"
-            "用箭头、流程线、节点、图标、对比卡片来表达重点信息，不要只放一个分子图或纯背景。"
-            "事实背景仅供理解，不要把它排版进画面："
-            f"{fact_context}"
-            "事实准确性要求：如果画面出现公司名、药物名、阶段、比例、会议名、金额等具体信息，"
-            "只能来自白名单文字；不要自行编造数值、曲线坐标、试验结果、监管结论、疗效、安全性或投资含义。"
-            "可以使用无坐标示意曲线、流程图、机制图、药物研发管线图标，但不要写具体数值。"
-            "不要出现真实患者、真实药盒、疗效承诺、投资收益暗示。"
+            f"画面文字白名单：主标题「{display_title}」；三个重点信息块「{info_blocks[0]}」「{info_blocks[1]}」「{info_blocks[2]}」；"
+            f"角标/小标签「{visual_labels}」。不要生成其他文字。视觉中心：{visual_scene}。"
         )
 
     def _short_visual_title(self, title: str) -> str:
