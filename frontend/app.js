@@ -16,11 +16,13 @@ const els = {
   passwordMessage: document.querySelector("#passwordMessage"),
   runList: document.querySelector("#runList"),
   runFlow: document.querySelector("#runFlow"),
+  autoPublish: document.querySelector("#autoPublish"),
   topicInput: document.querySelector("#topicInput"),
   contentInstruction: document.querySelector("#contentInstruction"),
   formatReference: document.querySelector("#formatReference"),
   maxItems: document.querySelector("#maxItems"),
   maxHotspots: document.querySelector("#maxHotspots"),
+  publishCount: document.querySelector("#publishCount"),
   contentWords: document.querySelector("#contentWords"),
   imageSize: document.querySelector("#imageSize"),
   statusPill: document.querySelector("#statusPill"),
@@ -35,8 +37,23 @@ const els = {
   publishView: document.querySelector("#publishView"),
   coverView: document.querySelector("#coverView"),
   toast: document.querySelector("#toast"),
+  runOverlay: document.querySelector("#runOverlay"),
+  runOverlayStep: document.querySelector("#runOverlayStep"),
   tabs: document.querySelectorAll(".tab"),
 };
+
+const AUTO_STEPS = [
+  "CEO 正在确定今天做什么内容...",
+  "Research Agent 正在抓取近期新闻...",
+  "Topic Agent 正在聚类、打分并选择热点...",
+  "Content Agent 正在生成发布文案...",
+  "Review Agent 正在核对证据和合规风险...",
+  "Review Agent 正在按审核建议修正文案...",
+  "Image Agent 正在规划图组和提示词...",
+  "万相正在生成封面图和内容卡片...",
+  "Publish Agent 正在整理发布预览...",
+];
+let autoStepTimer = null;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -90,12 +107,23 @@ function renderRuns(runs) {
     return;
   }
   for (const run of runs) {
+    const row = document.createElement("div");
+    row.className = `run-row ${state.currentRun?.run_id === run.run_id ? "active" : ""}`;
     const button = document.createElement("button");
-    button.className = `run-item ${state.currentRun?.run_id === run.run_id ? "active" : ""}`;
+    button.className = "run-item";
     button.type = "button";
     button.innerHTML = `<strong>${escapeHtml(run.run_id)}</strong><span>${escapeHtml(run.target_date || "")} · ${run.research?.hotspots?.length || 0} 个候选主题</span>`;
     button.addEventListener("click", () => selectRun(run.run_id));
-    els.runList.appendChild(button);
+    const remove = document.createElement("button");
+    remove.className = "run-delete";
+    remove.type = "button";
+    remove.textContent = "删除";
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteRun(run.run_id, remove);
+    });
+    row.append(button, remove);
+    els.runList.appendChild(row);
   }
 }
 
@@ -103,6 +131,31 @@ async function selectRun(runId) {
   state.currentRun = await api(`/api/runs/${encodeURIComponent(runId)}`);
   renderCurrentRun();
   await loadRuns();
+}
+
+async function deleteRun(runId, button) {
+  if (!window.confirm(`确认删除任务记录「${runId}」？`)) return;
+  const oldText = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "删除中...";
+  }
+  try {
+    await api(`/api/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
+    if (state.currentRun?.run_id === runId) {
+      state.currentRun = null;
+      renderEmptyState();
+    }
+    await loadRuns();
+    showToast("任务记录已删除");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText || "删除";
+    }
+  }
 }
 
 async function runFlow() {
@@ -132,6 +185,55 @@ async function runFlow() {
   } finally {
     els.runFlow.disabled = false;
   }
+}
+
+async function autoPublish() {
+  setGlobalBusy(true, AUTO_STEPS[0]);
+  let stepIndex = 0;
+  autoStepTimer = setInterval(() => {
+    stepIndex = Math.min(stepIndex + 1, AUTO_STEPS.length - 1);
+    setOverlayStep(AUTO_STEPS[stepIndex]);
+  }, 3500);
+  try {
+    const payload = await api("/api/run/auto-publish", {
+      method: "POST",
+      body: JSON.stringify({
+        topic: els.topicInput.value,
+        max_items: Number(els.maxItems.value || 24),
+        max_hotspots: Number(els.maxHotspots.value || 6),
+        publish_count: Number(els.publishCount.value || 3),
+        content_words: Number(els.contentWords.value || 700),
+        content_instruction: els.contentInstruction.value,
+        format_reference: els.formatReference.value,
+        image_size: els.imageSize.value,
+        max_images_per_post: 5,
+      }),
+    });
+    state.currentRun = payload;
+    state.currentTab = "publish";
+    syncTabs();
+    renderCurrentRun();
+    await loadRuns();
+    showToast("发布预览已生成，可以检查并下载发布包");
+  } catch (error) {
+    showToast(error.message);
+    els.statusPill.textContent = "一键生成失败";
+  } finally {
+    clearInterval(autoStepTimer);
+    autoStepTimer = null;
+    setGlobalBusy(false);
+  }
+}
+
+function setGlobalBusy(active, message = "") {
+  document.body.classList.toggle("is-running", active);
+  els.runOverlay.hidden = !active;
+  if (message) setOverlayStep(message);
+}
+
+function setOverlayStep(message) {
+  els.runOverlayStep.textContent = message;
+  els.statusPill.textContent = message;
 }
 
 async function clearRuns() {
@@ -280,6 +382,30 @@ async function exportPublish(button) {
   }
 }
 
+async function reorderPublish(order, button) {
+  if (!state.currentRun?.run_id) return;
+  const oldText = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "保存中...";
+  }
+  try {
+    state.currentRun = await api(`/api/runs/${encodeURIComponent(state.currentRun.run_id)}/publish/order`, {
+      method: "POST",
+      body: JSON.stringify({ order }),
+    });
+    renderPublish(state.currentRun);
+    await loadRuns();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText || "调整顺序";
+    }
+  }
+}
+
 function renderCurrentRun() {
   const run = state.currentRun;
   if (!run) return;
@@ -312,6 +438,10 @@ function renderOutput() {
   }
   if (state.currentTab === "post") {
     renderItemPosts(run, files);
+    return;
+  }
+  if (state.currentTab === "review") {
+    renderReview(run);
     return;
   }
   els.coverActions.hidden = true;
@@ -352,13 +482,31 @@ function renderItemPosts(run, files) {
     return;
   }
   for (const [index, post] of posts.entries()) {
-    els.hotspotView.appendChild(renderPostCard(post, index));
+    els.hotspotView.appendChild(renderPostCard(post, index, run));
   }
 }
 
-function renderPostCard(post, index) {
+function renderPostCard(post, index, run) {
   const card = document.createElement("div");
   card.className = "hotspot-card";
+  const sourceIndex = Number(post.source_index ?? index);
+  const tools = document.createElement("div");
+  tools.className = "post-card-tools";
+  const status = document.createElement("span");
+  status.className = `review-status ${reviewStatusClass(post.review?.publish_status)}`;
+  status.textContent = post.review ? reviewStatusLabel(post.review.publish_status) : "未审核";
+  const reviewButton = document.createElement("button");
+  reviewButton.className = "secondary small-button";
+  reviewButton.type = "button";
+  reviewButton.textContent = post.review ? "重新审核" : "审核";
+  reviewButton.addEventListener("click", () => reviewPost(sourceIndex, reviewButton));
+  const reviseButton = document.createElement("button");
+  reviseButton.className = "secondary small-button";
+  reviseButton.type = "button";
+  reviseButton.textContent = "按建议修正";
+  reviseButton.disabled = !post.review;
+  reviseButton.addEventListener("click", () => revisePost(sourceIndex, reviseButton));
+  tools.append(status, reviewButton, reviseButton);
   const toggle = document.createElement("button");
   toggle.type = "button";
   const title = document.createElement("h3");
@@ -372,10 +520,16 @@ function renderPostCard(post, index) {
   detail.appendChild(detailBlock("正文", post.body || ""));
   detail.appendChild(detailLine("标签", (post.hashtags || []).join(" ")));
   detail.appendChild(detailLine("发布备注", (post.publish_notes || []).join(" / ")));
+  if (post.revision_notes?.length) {
+    detail.appendChild(detailLine("修正记录", post.revision_notes.join(" / ")));
+  }
+  if (post.review) {
+    detail.appendChild(renderReviewSummary(post.review));
+  }
   toggle.addEventListener("click", () => {
     detail.hidden = !detail.hidden;
   });
-  card.append(toggle, detail);
+  card.append(tools, toggle, detail);
   return card;
 }
 
@@ -411,10 +565,74 @@ function renderHotspots(run) {
     els.hotspotView.appendChild(empty);
     return;
   }
+  els.hotspotView.appendChild(renderCeoDecision(run));
   els.hotspotView.appendChild(renderTopicActionBar());
   for (const [index, hotspot] of hotspots.entries()) {
     els.hotspotView.appendChild(renderHotspotCard(hotspot, index));
   }
+}
+
+function renderCeoDecision(run) {
+  const decision = run.ceo_decision || {};
+  const panel = document.createElement("section");
+  panel.className = "ceo-decision-panel";
+  const header = document.createElement("div");
+  header.className = "ceo-decision-header";
+  const copy = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = "CEO 今日决策";
+  const subtitle = document.createElement("span");
+  subtitle.textContent = decision.today_content || "基于抓取新闻决定今天做什么内容";
+  copy.append(title, subtitle);
+  const score = document.createElement("div");
+  score.className = "ceo-score";
+  score.innerHTML = `<span>总体评分</span><strong>${escapeHtml(decision.overall_score ?? "-")}</strong>`;
+  header.append(copy, score);
+  panel.appendChild(header);
+
+  const strategy = document.createElement("p");
+  strategy.className = "ceo-strategy";
+  strategy.textContent = decision.strategy || "优先选择高分、证据充分、适合小红书表达的主题。";
+  panel.appendChild(strategy);
+
+  const stats = document.createElement("div");
+  stats.className = "ceo-stat-grid";
+  stats.append(
+    ceoStat("建议生成", `${decision.generate_count ?? 0} 篇`),
+    ceoStat("推荐主题", formatIndexList(decision.recommended_indices)),
+    ceoStat("可选主题", formatIndexList(decision.optional_indices)),
+    ceoStat("人工审核", formatIndexList(decision.manual_review_indices)),
+  );
+  panel.appendChild(stats);
+
+  if (decision.overall_reason) {
+    panel.appendChild(detailLine("CEO理由", decision.overall_reason));
+  }
+  if (decision.capabilities?.length) {
+    panel.appendChild(detailLine("调用能力", decision.capabilities.join(" / ")));
+  }
+  if (decision.execution_notes?.length) {
+    const notes = document.createElement("ul");
+    notes.className = "ceo-notes";
+    for (const note of decision.execution_notes) {
+      const item = document.createElement("li");
+      item.textContent = note;
+      notes.appendChild(item);
+    }
+    panel.appendChild(notes);
+  }
+  return panel;
+}
+
+function ceoStat(label, value) {
+  const item = document.createElement("div");
+  item.innerHTML = `<span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "-")}</strong>`;
+  return item;
+}
+
+function formatIndexList(indices) {
+  if (!Array.isArray(indices) || !indices.length) return "-";
+  return indices.map((index) => `#${Number(index) + 1}`).join("、");
 }
 
 function renderTopicActionBar() {
@@ -493,7 +711,7 @@ function renderPublish(run) {
   const generatedSources = new Set((run.item_posts || []).map((post, index) => Number(post.source_index ?? index)));
   const covers = (run.item_covers || []).filter((item) => generatedSources.has(Number(item.source_index ?? item.index)));
   const coversBySource = new Map(covers.map((cover) => [Number(cover.source_index ?? cover.index), cover]));
-  const posts = (run.item_posts || []).map((post, index) => {
+  const posts = sortedPublishPosts(run).map((post, index) => {
     const sourceIndex = Number(post.source_index ?? index);
     const cover = coversBySource.get(sourceIndex) || {};
     return {
@@ -527,6 +745,21 @@ function renderPublish(run) {
   for (const [index, post] of posts.entries()) {
     const card = document.createElement("article");
     card.className = "publish-card";
+    const tools = document.createElement("div");
+    tools.className = "publish-order-tools";
+    const up = document.createElement("button");
+    up.className = "secondary small-button";
+    up.type = "button";
+    up.textContent = "上移";
+    up.disabled = index === 0;
+    up.addEventListener("click", () => movePublishPost(posts, index, -1, up));
+    const down = document.createElement("button");
+    down.className = "secondary small-button";
+    down.type = "button";
+    down.textContent = "下移";
+    down.disabled = index === posts.length - 1;
+    down.addEventListener("click", () => movePublishPost(posts, index, 1, down));
+    tools.append(up, down);
     const title = document.createElement("h3");
     title.textContent = `${index + 1}. ${post.title}`;
     const body = document.createElement("pre");
@@ -547,9 +780,245 @@ function renderPublish(run) {
       missing.textContent = "尚未生成图片";
       gallery.appendChild(missing);
     }
-    card.append(title, body, tags, gallery);
+    card.append(tools, title, body, tags, gallery);
     els.publishView.appendChild(card);
   }
+}
+
+function sortedPublishPosts(run) {
+  const posts = (run.item_posts || []).filter((post) => post && typeof post === "object");
+  const order = Array.isArray(run.publish_order) ? run.publish_order.map(Number) : [];
+  if (!order.length) return posts;
+  const rank = new Map(order.map((sourceIndex, index) => [sourceIndex, index]));
+  return posts
+    .map((post, index) => ({ post, index, sourceIndex: Number(post.source_index ?? index) }))
+    .sort((a, b) => (rank.get(a.sourceIndex) ?? order.length + a.index) - (rank.get(b.sourceIndex) ?? order.length + b.index))
+    .map((item) => item.post);
+}
+
+function movePublishPost(posts, index, direction, button) {
+  const nextIndex = index + direction;
+  if (nextIndex < 0 || nextIndex >= posts.length) return;
+  const next = [...posts];
+  [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+  reorderPublish(next.map((post) => Number(post.source_index)), button);
+}
+
+function renderReview(run) {
+  els.outputView.hidden = true;
+  els.coverActions.hidden = true;
+  els.writingSettings.hidden = true;
+  els.hotspotView.hidden = false;
+  els.hotspotView.replaceChildren();
+  els.newsView.hidden = true;
+  els.newsView.replaceChildren();
+  els.coverView.hidden = true;
+  els.coverView.replaceChildren();
+  els.publishView.hidden = true;
+  els.publishView.replaceChildren();
+  const posts = run.item_posts || [];
+  if (!posts.length) {
+    const empty = document.createElement("pre");
+    empty.textContent = "还没有可审核的发布文案。请先在“热点卡片”生成文案。";
+    els.hotspotView.appendChild(empty);
+    return;
+  }
+  const header = document.createElement("div");
+  header.className = "topic-action-bar";
+  const copy = document.createElement("div");
+  copy.innerHTML = "<strong>Review / Evidence</strong><span>对照源新闻检查来源、夸大、疗效承诺、投资建议，并给出置信评分和修改点。</span>";
+  header.appendChild(copy);
+  els.hotspotView.appendChild(header);
+  for (const [index, post] of posts.entries()) {
+    els.hotspotView.appendChild(renderReviewCard(run, post, index));
+  }
+}
+
+function renderReviewCard(run, post, index) {
+  const card = document.createElement("article");
+  card.className = "review-card";
+  const sourceIndex = Number(post.source_index ?? index);
+  const hotspot = (run.research?.hotspots || [])[sourceIndex] || {};
+  const header = document.createElement("div");
+  header.className = "review-card-header";
+  const titleWrap = document.createElement("div");
+  const title = document.createElement("h3");
+  title.textContent = `${index + 1}. ${post.title || "未命名文案"}`;
+  const meta = document.createElement("p");
+  meta.textContent = `${hotspot.source || "未知来源"} · ${hotspot.published || "未知时间"}`;
+  titleWrap.append(title, meta);
+  const actions = document.createElement("div");
+  actions.className = "review-actions";
+  const status = document.createElement("span");
+  status.className = `review-status ${reviewStatusClass(post.review?.publish_status)}`;
+  status.textContent = post.review ? reviewStatusLabel(post.review.publish_status) : "未审核";
+  const reviewButton = document.createElement("button");
+  reviewButton.className = "primary";
+  reviewButton.type = "button";
+  reviewButton.textContent = post.review ? "重新审核" : "开始审核";
+  reviewButton.addEventListener("click", () => reviewPost(sourceIndex, reviewButton));
+  const reviseButton = document.createElement("button");
+  reviseButton.className = "secondary";
+  reviseButton.type = "button";
+  reviseButton.textContent = "按建议修正";
+  reviseButton.disabled = !post.review;
+  reviseButton.addEventListener("click", () => revisePost(sourceIndex, reviseButton));
+  actions.append(status, reviewButton, reviseButton);
+  header.append(titleWrap, actions);
+  card.appendChild(header);
+
+  if (post.review) {
+    card.appendChild(renderReviewSummary(post.review));
+    card.appendChild(renderReviewIssues(post.review));
+    card.appendChild(renderEvidenceList(post.review.evidence_used || hotspot.evidence || []));
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "muted-copy";
+    empty.textContent = "尚未审核。点击“开始审核”后会调用 DeepSeek 对照源新闻进行判断。";
+    card.appendChild(empty);
+  }
+  return card;
+}
+
+function renderReviewSummary(review) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "review-summary";
+  wrapper.append(
+    reviewMetric("来源置信", review.source_confidence),
+    reviewMetric("总体置信", review.overall_confidence),
+    reviewMetric("夸大风险", review.exaggeration_risk),
+    reviewMetric("疗效风险", review.efficacy_promise_risk),
+    reviewMetric("投资风险", review.investment_advice_risk),
+  );
+  const summary = document.createElement("p");
+  summary.textContent = review.summary || "";
+  wrapper.appendChild(summary);
+  return wrapper;
+}
+
+function reviewMetric(label, value) {
+  const item = document.createElement("div");
+  item.innerHTML = `<span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? 0)}</strong>`;
+  return item;
+}
+
+function renderReviewIssues(review) {
+  const box = document.createElement("div");
+  box.className = "review-issues";
+  const issues = review.issues || [];
+  const heading = document.createElement("strong");
+  heading.textContent = issues.length ? "审核问题与修改点" : "审核问题与修改点：暂无明显问题";
+  box.appendChild(heading);
+  for (const issue of issues) {
+    const item = document.createElement("div");
+    item.className = "review-issue";
+    item.innerHTML = `<b>${escapeHtml(issue.severity || "-")} · ${escapeHtml(issue.category || "-")}</b>`;
+    item.appendChild(detailLine("发现", issue.finding || ""));
+    item.appendChild(detailLine("证据", issue.evidence || ""));
+    item.appendChild(detailLine("建议", issue.suggestion || ""));
+    box.appendChild(item);
+  }
+  if (review.revision_suggestions?.length) {
+    const list = document.createElement("ul");
+    for (const suggestion of review.revision_suggestions) {
+      const item = document.createElement("li");
+      item.textContent = suggestion;
+      list.appendChild(item);
+    }
+    box.appendChild(list);
+  }
+  return box;
+}
+
+function renderEvidenceList(items) {
+  const box = document.createElement("div");
+  box.className = "evidence-list";
+  const heading = document.createElement("strong");
+  heading.textContent = "Evidence";
+  box.appendChild(heading);
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "暂无可追溯证据。";
+    box.appendChild(empty);
+    return box;
+  }
+  for (const item of items) {
+    const row = document.createElement("p");
+    const link = item.url ? document.createElement("a") : null;
+    if (link) {
+      link.href = item.url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = item.title || item.url;
+      row.append(`${item.source || "未知来源"} · ${item.published || "未知时间"}｜`, link);
+    } else {
+      row.textContent = `${item.source || "未知来源"} · ${item.published || "未知时间"}｜${item.title || "-"}`;
+    }
+    box.appendChild(row);
+  }
+  return box;
+}
+
+async function reviewPost(sourceIndex, button) {
+  if (!state.currentRun?.run_id) return;
+  const oldText = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "审核中...";
+  }
+  try {
+    state.currentRun = await api(`/api/runs/${encodeURIComponent(state.currentRun.run_id)}/review`, {
+      method: "POST",
+      body: JSON.stringify({ source_index: sourceIndex }),
+    });
+    state.currentTab = "review";
+    syncTabs();
+    renderOutput();
+    await loadRuns();
+    showToast("审核完成");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText || "审核";
+    }
+  }
+}
+
+async function revisePost(sourceIndex, button) {
+  if (!state.currentRun?.run_id) return;
+  const oldText = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "修正中...";
+  }
+  try {
+    state.currentRun = await api(`/api/runs/${encodeURIComponent(state.currentRun.run_id)}/revise`, {
+      method: "POST",
+      body: JSON.stringify({ source_index: sourceIndex }),
+    });
+    state.currentTab = "post";
+    syncTabs();
+    renderOutput();
+    await loadRuns();
+    showToast("已按审核建议修正文案");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText || "按建议修正";
+    }
+  }
+}
+
+function reviewStatusLabel(status) {
+  return { pass: "通过", revise: "建议修正", block: "暂不发布" }[status] || "未审核";
+}
+
+function reviewStatusClass(status) {
+  return { pass: "status-pass", revise: "status-revise", block: "status-block" }[status] || "status-pending";
 }
 
 function renderHotspotCard(hotspot, index) {
@@ -569,6 +1038,18 @@ function renderHotspotCard(hotspot, index) {
   const selectorText = document.createElement("span");
   selectorText.textContent = "选择生成文案";
   selector.append(checkbox, score, selectorText);
+  const badges = document.createElement("div");
+  badges.className = "topic-badges";
+  const ceoDecision = hotspot.ceo_decision || "";
+  if (ceoDecision) {
+    badges.appendChild(topicBadge(`CEO：${ceoDecisionLabel(ceoDecision)}`, `decision-${ceoDecision}`));
+  }
+  if (hotspot.ceo_score) {
+    badges.appendChild(topicBadge(`CEO ${hotspot.ceo_score}分`, "decision-score"));
+  }
+  if (hotspot.human_review_required) {
+    badges.appendChild(topicBadge("需人工审核", "decision-review"));
+  }
   const toggle = document.createElement("button");
   toggle.type = "button";
   const title = document.createElement("h3");
@@ -580,6 +1061,10 @@ function renderHotspotCard(hotspot, index) {
   detail.className = "hotspot-detail";
   detail.hidden = true;
   detail.appendChild(renderScoreGrid(hotspot));
+  detail.appendChild(detailLine("CEO意见", hotspot.ceo_reason || ""));
+  detail.appendChild(detailLine("CEO建议做法", hotspot.ceo_content_angle || ""));
+  detail.appendChild(detailLine("CEO调用能力", (hotspot.ceo_capabilities || []).join(" / ")));
+  detail.appendChild(detailLine("人工审核", hotspot.human_review_required ? hotspot.review_reason || "建议人工复核。" : "否"));
   detail.appendChild(detailLine("打分理由", hotspot.score_reason || hotspot.why_it_matters || ""));
   detail.appendChild(detailLine("合规提醒", hotspot.compliance_note || ""));
   detail.appendChild(detailLine("为什么重要", hotspot.why_it_matters || ""));
@@ -608,9 +1093,23 @@ function renderHotspotCard(hotspot, index) {
   generateOne.addEventListener("click", () => generatePosts([index], generateOne));
   const header = document.createElement("div");
   header.className = "topic-card-tools";
-  header.append(selector, generateOne);
+  const leftTools = document.createElement("div");
+  leftTools.className = "topic-card-left";
+  leftTools.append(selector, badges);
+  header.append(leftTools, generateOne);
   card.append(header, toggle, detail);
   return card;
+}
+
+function topicBadge(label, className) {
+  const badge = document.createElement("span");
+  badge.className = `topic-badge ${className}`;
+  badge.textContent = label;
+  return badge;
+}
+
+function ceoDecisionLabel(value) {
+  return { do: "推荐做", optional: "可选", skip: "暂不做" }[value] || value;
 }
 
 function renderScoreGrid(hotspot) {
@@ -753,18 +1252,25 @@ function renderCoverItem(run, item) {
     const options = document.createElement("div");
     options.className = "prompt-options";
     const heading = document.createElement("strong");
-    heading.textContent = "Image Agent 提示词方案";
+    const plan = item.image_plan || {};
+    heading.textContent = `Image Agent 图组提示词${plan.recommended_count ? `：推荐 ${plan.recommended_count} 张` : ""}`;
     options.appendChild(heading);
+    if (plan.strategy) {
+      const planText = document.createElement("p");
+      planText.className = "muted-copy";
+      planText.textContent = plan.strategy;
+      options.appendChild(planText);
+    }
     for (const [promptIndex, option] of item.prompt_options.slice(0, 5).entries()) {
       const details = document.createElement("details");
       details.className = "prompt-option";
       details.open = promptIndex === 0 && !item.asset;
       const summary = document.createElement("summary");
-      summary.textContent = `${option.title || "封面方案"} · ${option.style || "视觉风格"} · ${option.score || 0}分`;
+      summary.textContent = `${option.sequence || promptIndex + 1}. ${imageRoleLabel(option.image_role)} · ${option.title || "图片方案"} · ${option.style || "视觉风格"} · ${option.score || 0}分`;
       const imageButton = document.createElement("button");
       imageButton.className = "primary prompt-image-button";
       imageButton.type = "button";
-      imageButton.textContent = "用这个生成图片";
+      imageButton.textContent = `生成这张${imageRoleLabel(option.image_role)}`;
       imageButton.addEventListener("click", (event) => {
         event.preventDefault();
         generateCover(Number(item.index), promptIndex, imageButton);
@@ -785,6 +1291,10 @@ function renderCoverItem(run, item) {
   ].join("\n");
   card.appendChild(detail);
   return card;
+}
+
+function imageRoleLabel(role) {
+  return role === "content_card" ? "内容卡片" : "封面图";
 }
 
 function setTab(tab) {
@@ -814,6 +1324,7 @@ function escapeHtml(value) {
 }
 
 els.runFlow.addEventListener("click", runFlow);
+els.autoPublish.addEventListener("click", autoPublish);
 els.clearRuns.addEventListener("click", clearRuns);
 els.togglePassword.addEventListener("click", () => {
   els.passwordPanel.hidden = !els.passwordPanel.hidden;

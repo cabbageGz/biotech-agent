@@ -86,7 +86,7 @@ database/app.db
 
 ```text
 username: admin
-password: 712834
+password: 123456
 ```
 
 后续部署到服务器时，建议把 `database/` 作为持久化目录挂载或一起备份：

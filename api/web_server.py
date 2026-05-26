@@ -52,8 +52,37 @@ class ConsoleApp:
         self.auth.increment_hotspots(int(user["id"]), len(payload.get("item_posts", [])))
         return payload
 
+    def run_auto_publish(self, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
+        payload = self.flow.run_auto_publish(
+            topic_hint=str(body.get("topic") or ""),
+            max_items=int(body.get("max_items") or 24),
+            max_hotspots=int(body.get("max_hotspots") or 6),
+            publish_count=int(body.get("publish_count") or 0),
+            reference_url=str(body.get("reference_url") or ""),
+            content_words=int(body.get("content_words") or 700),
+            content_instruction=str(body.get("content_instruction") or ""),
+            format_reference=str(body.get("format_reference") or ""),
+            image_size=str(body.get("image_size") or ""),
+            image_instruction=str(body.get("image_instruction") or ""),
+            max_images_per_post=int(body.get("max_images_per_post") or 5),
+            user_id=int(user["id"]),
+            username=str(user["username"]),
+        )
+        pipeline = payload.get("auto_pipeline") if isinstance(payload.get("auto_pipeline"), dict) else {}
+        self.auth.increment_hotspots(int(user["id"]), int(pipeline.get("generated_posts") or 0))
+        self.auth.increment_images(int(user["id"]), int(pipeline.get("generated_images") or 0))
+        return payload
+
     def clear_runs(self, user: dict[str, object]) -> dict[str, object]:
-        return {"removed": self.storage.clear_runs(user_id=int(user["id"]))}
+        user_id = None if user.get("role") == "admin" else int(user["id"])
+        return {"removed": self.storage.clear_runs(user_id=user_id)}
+
+    def delete_run(self, run_id: str, user: dict[str, object]) -> dict[str, object]:
+        run = self.storage.read_run(run_id)
+        if not self.can_access_run(run, user):
+            raise PermissionError("Forbidden")
+        self.storage.delete_run(run_id)
+        return {"ok": True, "deleted": run_id}
 
     def generate_cover(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
@@ -108,6 +137,18 @@ class ConsoleApp:
         self.auth.increment_hotspots(int(user["id"]), len(indices))
         return payload
 
+    def review_post(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
+        run = self.storage.read_run(run_id)
+        if not self.can_access_run(run, user):
+            raise PermissionError("Forbidden")
+        return self.flow.review_post_for_run(run_id, source_index=int(body.get("source_index") or 0))
+
+    def revise_post(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
+        run = self.storage.read_run(run_id)
+        if not self.can_access_run(run, user):
+            raise PermissionError("Forbidden")
+        return self.flow.revise_post_for_run(run_id, source_index=int(body.get("source_index") or 0))
+
     def publish_package(self, run_id: str, user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
         if not self.can_access_run(run, user):
@@ -119,6 +160,14 @@ class ConsoleApp:
         if not self.can_access_run(run, user):
             raise PermissionError("Forbidden")
         return self.flow.export_publish_for_run(run_id)
+
+    def reorder_publish(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
+        run = self.storage.read_run(run_id)
+        if not self.can_access_run(run, user):
+            raise PermissionError("Forbidden")
+        raw_order = body.get("order", [])
+        order = [int(item) for item in raw_order] if isinstance(raw_order, list) else []
+        return self.flow.reorder_publish_for_run(run_id, order=order)
 
     def delete_cover_image(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
@@ -273,6 +322,9 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
             if parsed.path == "/api/run":
                 self._json(app.run_daily(self._read_json(), user))
                 return
+            if parsed.path == "/api/run/auto-publish":
+                self._json(app.run_auto_publish(self._read_json(), user))
+                return
             if parsed.path == "/api/runs/clear":
                 self._json(app.clear_runs(user))
                 return
@@ -292,6 +344,10 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
                 run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/publish/export").strip("/"))
                 self._json(app.export_publish(run_id, user))
                 return
+            if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/publish/order"):
+                run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/publish/order").strip("/"))
+                self._json(app.reorder_publish(run_id, self._read_json(), user))
+                return
             if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/publish"):
                 run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/publish").strip("/"))
                 self._json(app.publish_package(run_id, user))
@@ -300,10 +356,25 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
                 run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/posts").strip("/"))
                 self._json(app.generate_posts(run_id, self._read_json(), user))
                 return
+            if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/review"):
+                run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/review").strip("/"))
+                self._json(app.review_post(run_id, self._read_json(), user))
+                return
+            if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/revise"):
+                run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/revise").strip("/"))
+                self._json(app.revise_post(run_id, self._read_json(), user))
+                return
             self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
         def _handle_delete(self) -> None:
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/runs/"):
+                user = self._require_user()
+                if not user:
+                    return
+                run_id = unquote(parsed.path.removeprefix("/api/runs/").strip("/"))
+                self._json(app.delete_run(run_id, user))
+                return
             if parsed.path.startswith("/api/admin/users/"):
                 user = self._require_admin()
                 if not user:

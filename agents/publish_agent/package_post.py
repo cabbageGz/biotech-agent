@@ -16,10 +16,18 @@ class PublishPackager:
             if isinstance(cover, dict):
                 covers_by_source[int(cover.get("source_index", cover.get("index", -1)))] = cover
 
+        raw_posts = [post for post in run.get("item_posts", []) if isinstance(post, dict)]
+        order = [int(item) for item in run.get("publish_order", []) if str(item).lstrip("-").isdigit()]
+        if order:
+            order_rank = {source_index: rank for rank, source_index in enumerate(order)}
+            raw_posts = sorted(
+                enumerate(raw_posts),
+                key=lambda pair: order_rank.get(int(pair[1].get("source_index", pair[0])), len(order) + pair[0]),
+            )
+            raw_posts = [post for _, post in raw_posts]
+
         posts: list[PublishPost] = []
-        for index, raw_post in enumerate(run.get("item_posts", [])):
-            if not isinstance(raw_post, dict):
-                continue
+        for index, raw_post in enumerate(raw_posts):
             source_index = int(raw_post.get("source_index", index))
             cover = covers_by_source.get(source_index, {})
             images = [

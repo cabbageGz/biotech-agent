@@ -17,4 +17,4 @@ class ImagePromptRanker:
             if len(prompt) > 1600:
                 score -= 8
             option.score = max(0, min(100, score))
-        return sorted(options, key=lambda item: item.score, reverse=True)
+        return sorted(options, key=lambda item: item.sequence)

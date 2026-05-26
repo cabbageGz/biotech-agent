@@ -47,7 +47,10 @@
               <strong>生成设置</strong>
               <p>先定义选题和抓取范围，再聚类排序；文案要求在热点卡片中设置。</p>
             </div>
-            <button id="runFlow" class="primary" type="button">获取新闻并排序</button>
+            <div class="panel-actions">
+              <button id="runFlow" class="secondary" type="button">获取新闻并排序</button>
+              <button id="autoPublish" class="primary" type="button">一键生成发布预览</button>
+            </div>
           </div>
           <div class="field-grid">
             <label class="wide-field" for="topicInput">
@@ -63,6 +66,7 @@
           <div class="settings-row">
             <label>新闻抓取上限 <input id="maxItems" type="number" min="5" max="60" value="24" /></label>
             <label>候选主题上限 <input id="maxHotspots" type="number" min="3" max="10" value="6" /></label>
+            <label>发布消息数 <input id="publishCount" type="number" min="1" max="5" value="3" /></label>
           </div>
         </section>
 
@@ -83,6 +87,7 @@
 
         <section class="tabs">
           <button class="tab active" data-tab="post" type="button">发布文案</button>
+          <button class="tab" data-tab="review" type="button">审核证据</button>
           <button class="tab" data-tab="hotspots" type="button">热点卡片</button>
           <button class="tab" data-tab="news" type="button">新闻清单</button>
           <button class="tab" data-tab="cover" type="button">封面图</button>
@@ -93,7 +98,6 @@
         <section class="output">
           <div id="coverActions" class="cover-actions" hidden>
             <div class="cover-action-top">
-              <span>每条正文可单独生成一张配图</span>
               <label>
                 图片尺寸
                 <select id="imageSize">
@@ -145,6 +149,13 @@
           <pre id="outputView">点击“获取新闻并排序”开始第一轮选题分析。</pre>
         </section>
       </main>
+    </div>
+    <div id="runOverlay" class="run-overlay" hidden>
+      <div class="run-overlay-panel">
+        <strong>CEO Agent 正在执行</strong>
+        <p id="runOverlayStep">准备开始...</p>
+        <div class="run-progress"><span></span></div>
+      </div>
     </div>
     <div id="toast" class="toast"></div>
     <script src="/app.js"></script>

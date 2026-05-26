@@ -31,6 +31,13 @@ class Hotspot:
     compliance_note: str = ""
     evidence: list[dict[str, str]] | None = None
     selected: bool = False
+    ceo_decision: str = ""
+    ceo_score: int = 0
+    ceo_reason: str = ""
+    ceo_content_angle: str = ""
+    ceo_capabilities: list[str] | None = None
+    human_review_required: bool = False
+    review_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -109,6 +116,15 @@ class ResearchAgent:
                     compliance_note=str(item.get("compliance_note") or ""),
                     evidence=[dict(evidence) for evidence in (item.get("evidence") or []) if isinstance(evidence, dict)],
                     selected=bool(item.get("selected")),
+                    ceo_decision=str(item.get("ceo_decision") or ""),
+                    ceo_score=int(item.get("ceo_score") or 0),
+                    ceo_reason=str(item.get("ceo_reason") or ""),
+                    ceo_content_angle=str(item.get("ceo_content_angle") or ""),
+                    ceo_capabilities=[
+                        str(name) for name in (item.get("ceo_capabilities") or []) if str(name).strip()
+                    ],
+                    human_review_required=bool(item.get("human_review_required")),
+                    review_reason=str(item.get("review_reason") or ""),
                 )
             )
         return ResearchReport(

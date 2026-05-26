@@ -54,7 +54,7 @@ class AuthStore:
                     INSERT INTO users (username, password_hash, role, created_at)
                     VALUES (?, ?, 'admin', ?)
                     """,
-                    ("admin", self.hash_password("712834"), self._now()),
+                    ("admin", self.hash_password("123456"), self._now()),
                 )
 
     def create_user(self, username: str, password: str, role: str = "user") -> dict[str, Any]:

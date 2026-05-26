@@ -62,6 +62,30 @@ class AuthPermissionsTest(unittest.TestCase):
             self.assertEqual(storage.list_runs(user_id=10)[0]["user_id"], 10)
             self.assertEqual(len(storage.list_runs(user_id=None)), 2)
 
+    def test_admin_clear_can_remove_orphan_runs(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            storage = RunStorage(Path(temp_dir) / "runs")
+            orphan = storage.new_run_dir()
+            storage.write_run(orphan, {"user_id": None, "research": {"hotspots": []}}, {})
+            owned = storage.new_run_dir()
+            storage.write_run(owned, {"user_id": 10, "research": {"hotspots": []}}, {})
+
+            self.assertEqual(storage.clear_runs(user_id=10), 1)
+            self.assertEqual(len(storage.list_runs(user_id=None)), 1)
+            self.assertEqual(storage.clear_runs(user_id=None), 1)
+            self.assertEqual(len(storage.list_runs(user_id=None)), 0)
+
+    def test_mutate_run_merges_latest_payload(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            storage = RunStorage(Path(temp_dir) / "runs")
+            run_dir = storage.new_run_dir()
+            payload = storage.write_run(run_dir, {"items": []}, {})
+
+            storage.mutate_run(payload["run_id"], lambda data: {**data, "items": [*data["items"], "a"]})
+            updated = storage.mutate_run(payload["run_id"], lambda data: {**data, "items": [*data["items"], "b"]})
+
+            self.assertEqual(updated["items"], ["a", "b"])
+
 
 if __name__ == "__main__":
     unittest.main()

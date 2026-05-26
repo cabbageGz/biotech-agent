@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ class RunStorage:
     def __init__(self, root: Path | str = "database/runs") -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
 
     def new_run_dir(self) -> Path:
         run_id = datetime.now().strftime(RUN_ID_FORMAT)
@@ -72,15 +74,35 @@ class RunStorage:
                 removed += 1
         return removed
 
+    def delete_run(self, run_id: str) -> None:
+        run_dir = (self.root / run_id).resolve()
+        root = self.root.resolve()
+        if not str(run_dir).startswith(str(root)) or not run_dir.is_dir():
+            raise FileNotFoundError("任务记录不存在")
+        shutil.rmtree(run_dir)
+
     def update_run(self, run_id: str, updates: dict[str, Any], files: dict[str, str] | None = None) -> dict[str, Any]:
+        def apply_updates(payload: dict[str, Any]) -> dict[str, Any]:
+            payload.update(updates)
+            return payload
+
+        return self.mutate_run(run_id=run_id, mutator=apply_updates, files=files)
+
+    def mutate_run(
+        self,
+        run_id: str,
+        mutator: Any,
+        files: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         run_dir = self.root / run_id
         meta_path = run_dir / "run.json"
-        payload = json.loads(meta_path.read_text(encoding="utf-8"))
-        for filename, content in (files or {}).items():
-            (run_dir / filename).write_text(content, encoding="utf-8")
-        existing_files = set(payload.get("files", []))
-        existing_files.update((files or {}).keys())
-        payload.update(updates)
-        payload["files"] = sorted(existing_files)
-        meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        with self._lock:
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            for filename, content in (files or {}).items():
+                (run_dir / filename).write_text(content, encoding="utf-8")
+            existing_files = set(payload.get("files", []))
+            existing_files.update((files or {}).keys())
+            payload = mutator(payload)
+            payload["files"] = sorted(existing_files)
+            meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return self.read_run(run_id)
