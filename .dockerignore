@@ -1,0 +1,10 @@
+.git
+.env
+database
+__pycache__
+*.py[cod]
+.pytest_cache
+.venv
+.DS_Store
+deploy/*.tar
+deploy/*.tar.gz
