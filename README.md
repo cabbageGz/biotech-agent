@@ -62,6 +62,18 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
 ```
 
+## 可选图片生成配置
+
+封面图和内容卡片使用阿里云百炼 / DashScope 的通义万相接口。API Key 通过环境变量配置：
+
+```bash
+DASHSCOPE_API_KEY=你的_万相_key
+WANXIANG_MODEL=wan2.7-image
+WANXIANG_IMAGE_SIZE=1024*1024
+```
+
+其中 `DASHSCOPE_API_KEY` 是必填；`WANXIANG_MODEL` 和 `WANXIANG_IMAGE_SIZE` 可不填，系统默认分别使用 `wan2.7-image` 和 `1024*1024`。如果服务已经启动，修改环境变量后需要重启后端服务。
+
 ## 运行记录
 
 每次生成会写入：
