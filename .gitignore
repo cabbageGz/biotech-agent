@@ -3,7 +3,17 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+.env.*
+!.env.example
 database/runs/
 database/console-screenshot.png
 database/app.db
 database/app.db-*
+database/jobs/
+database/**/*.zip
+database/**/*.png
+database/**/*.jpg
+database/**/*.jpeg
+database/**/*.webp
+deploy/*.tar
+deploy/*.tar.gz

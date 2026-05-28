@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
+
+from tools.http import HTTPClient, HTTPRequestError
+from tools.oss import AliyunOSSClient
 
 
 class WanxiangError(RuntimeError):
@@ -20,6 +21,7 @@ class CoverImage:
     size: str
     image_url: str = ""
     local_path: str = ""
+    oss_key: str = ""
     error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -36,6 +38,7 @@ class WanxiangClient:
         model: str | None = None,
         size: str | None = None,
         timeout: int = 120,
+        oss_client: AliyunOSSClient | None = None,
     ) -> None:
         self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY", "")
         self.base_url = (
@@ -46,6 +49,8 @@ class WanxiangClient:
         self.model = model or os.environ.get("WANXIANG_MODEL") or "wan2.7-image"
         self.size = size or os.environ.get("WANXIANG_IMAGE_SIZE") or "1024*1024"
         self.timeout = timeout
+        self.oss_client = oss_client or AliyunOSSClient()
+        self.http = HTTPClient(timeout=timeout, retries=2, backoff=1.0)
 
     @property
     def available(self) -> bool:
@@ -78,30 +83,39 @@ class WanxiangClient:
             image_url = self._extract_image_url(response)
             cover.image_url = image_url
             if image_url:
-                self._download(image_url, output_path)
-                cover.local_path = str(output_path)
+                data = self._download_bytes(image_url)
+                if self.oss_client.available:
+                    uploaded = self.oss_client.upload_bytes(
+                        data,
+                        key=self.oss_client.key_for_path(output_path),
+                        content_type=self._content_type(output_path),
+                    )
+                    cover.image_url = uploaded.url
+                    cover.oss_key = uploaded.key
+                else:
+                    self._write_local(data, output_path)
+                    cover.local_path = str(output_path)
         except Exception as exc:
             cover.error = str(exc)
         return cover
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        request = urllib.request.Request(
-            self.base_url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
+        try:
+            response = self.http.request(
+                "POST",
+                self.base_url,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise WanxiangError(f"Wanxiang API error {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise WanxiangError(f"Wanxiang API connection failed: {exc.reason}") from exc
+                },
+                timeout=self.timeout,
+            )
+            return json.loads(response.text())
+        except HTTPRequestError as exc:
+            if exc.status:
+                raise WanxiangError(f"Wanxiang API error {exc.status}: {exc.detail or exc}") from exc
+            raise WanxiangError(f"Wanxiang API connection failed: {exc}") from exc
 
     def _extract_image_url(self, response: dict[str, Any]) -> str:
         output = response.get("output") or {}
@@ -117,8 +131,17 @@ class WanxiangClient:
                 return str(item["url"])
         raise WanxiangError(f"No image URL in Wanxiang response: {json.dumps(response, ensure_ascii=False)[:500]}")
 
-    def _download(self, image_url: str, output_path: Path) -> None:
-        request = urllib.request.Request(image_url, headers={"User-Agent": "biotech-agent/0.1"})
+    def _download_bytes(self, image_url: str) -> bytes:
+        return self.http.get(image_url, timeout=self.timeout).body
+
+    def _write_local(self, data: bytes, output_path: Path) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            output_path.write_bytes(response.read())
+        output_path.write_bytes(data)
+
+    def _content_type(self, path: Path) -> str:
+        return {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+        }.get(path.suffix.lower(), "application/octet-stream")

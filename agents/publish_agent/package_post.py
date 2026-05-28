@@ -10,13 +10,20 @@ class PublishPackager:
     def __init__(self, validator: PublishValidator | None = None) -> None:
         self.validator = validator or PublishValidator()
 
-    def package(self, run: dict[str, Any]) -> PublishPackage:
+    def package(self, run: dict[str, Any], selected_sources: list[int] | None = None) -> PublishPackage:
         covers_by_source: dict[int, dict[str, Any]] = {}
         for cover in run.get("item_covers", []):
             if isinstance(cover, dict):
                 covers_by_source[int(cover.get("source_index", cover.get("index", -1)))] = cover
 
         raw_posts = [post for post in run.get("item_posts", []) if isinstance(post, dict)]
+        selected_lookup = set(selected_sources or [])
+        if selected_sources:
+            raw_posts = [
+                post
+                for index, post in enumerate(raw_posts)
+                if int(post.get("source_index", index)) in selected_lookup
+            ]
         order = [int(item) for item in run.get("publish_order", []) if str(item).lstrip("-").isdigit()]
         if order:
             order_rank = {source_index: rank for rank, source_index in enumerate(order)}
@@ -37,6 +44,8 @@ class PublishPackager:
                     prompt_index=int(image.get("prompt_index") or 0),
                     size=str(image.get("size") or ""),
                     model=str(image.get("model") or ""),
+                    image_url=str(image.get("image_url") or ""),
+                    oss_key=str(image.get("oss_key") or ""),
                 )
                 for image in cover.get("images", [])
                 if isinstance(image, dict) and image.get("asset")
@@ -49,6 +58,8 @@ class PublishPackager:
                         prompt_index=0,
                         size=str(cover.get("size") or ""),
                         model=str(cover.get("model") or ""),
+                        image_url=str(cover.get("image_url") or ""),
+                        oss_key=str(cover.get("oss_key") or ""),
                     )
                 )
             post = PublishPost(

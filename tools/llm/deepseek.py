@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from typing import Any
+
+from tools.http import HTTPClient, HTTPRequestError
 
 
 class LLMError(RuntimeError):
@@ -25,6 +25,7 @@ class DeepSeekClient:
         self.base_url = (base_url or os.environ.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").rstrip("/")
         self.model = model or os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash"
         self.timeout = timeout
+        self.http = HTTPClient(timeout=timeout, retries=2, backoff=0.8)
 
     @property
     def available(self) -> bool:
@@ -62,23 +63,22 @@ class DeepSeekClient:
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(
-            self.base_url + path,
-            data=body,
-            headers={
+        try:
+            response = self.http.request(
+                "POST",
+                self.base_url + path,
+                data=body,
+                headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise LLMError(f"DeepSeek API error {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise LLMError(f"DeepSeek API connection failed: {exc.reason}") from exc
+                },
+                timeout=self.timeout,
+            )
+            return json.loads(response.text())
+        except HTTPRequestError as exc:
+            if exc.status:
+                raise LLMError(f"DeepSeek API error {exc.status}: {exc.detail or exc}") from exc
+            raise LLMError(f"DeepSeek API connection failed: {exc}") from exc
         except json.JSONDecodeError as exc:
             raise LLMError("DeepSeek returned invalid JSON") from exc
 

@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 import re
-import urllib.error
-import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
+from tools.http import HTTPClient
 from tools.scraper.extractor import strip_html
 
 
@@ -27,19 +27,25 @@ class RSSItem:
 
 
 class RSSReader:
-    def __init__(self, sources_path: Path | None = None, timeout: int = 12) -> None:
+    def __init__(self, sources_path: Path | None = None, timeout: int = 12, max_workers: int = 6) -> None:
         self.sources_path = sources_path or DEFAULT_SOURCES_PATH
         self.timeout = timeout
+        self.max_workers = max_workers
+        self.http = HTTPClient(timeout=timeout, retries=2, backoff=0.4)
 
     def fetch_many(self, max_items: int = 24, max_age_days: int = 14) -> tuple[list[RSSItem], list[str]]:
         sources = self._load_sources()
         items: list[RSSItem] = []
         errors: list[str] = []
-        for source in sources:
-            try:
-                items.extend(self.fetch_source(source))
-            except Exception as exc:  # Keep the daily run alive if one source breaks.
-                errors.append(f"{source.get('name', 'unknown')}: {exc}")
+        worker_count = max(1, min(self.max_workers, len(sources)))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {executor.submit(self.fetch_source, source): source for source in sources}
+            for future in as_completed(futures):
+                source = futures[future]
+                try:
+                    items.extend(future.result())
+                except Exception as exc:  # Keep the daily run alive if one source breaks.
+                    errors.append(f"{source.get('name', 'unknown')}: {exc}")
         deduped = self._dedupe(items)
         recent = self._recent_first(deduped, max_age_days=max_age_days)
         return recent[:max_items], errors
@@ -47,18 +53,18 @@ class RSSReader:
     def fetch_source(self, source: dict[str, Any]) -> list[RSSItem]:
         name = str(source["name"])
         url = str(source["url"])
-        request = urllib.request.Request(
-            url,
-            headers={
+        try:
+            response = self.http.get(
+                url,
+                headers={
                 "User-Agent": "biotech-agent/0.1 (+local intelligence workflow)",
                 "Accept": "application/rss+xml, application/xml, text/xml, */*",
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                raw = response.read()
-        except urllib.error.URLError as exc:
-            raise RuntimeError(getattr(exc, "reason", exc)) from exc
+                },
+                timeout=self.timeout,
+            )
+            raw = response.body
+        except Exception as exc:
+            raise RuntimeError(exc) from exc
         root = ET.fromstring(self._sanitize_xml(raw))
         return self._parse_feed(root, source_name=name)
 

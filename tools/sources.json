@@ -57,17 +57,17 @@
   },
   {
     "name": "药明康德",
-    "kind": "company",
-    "status": "planned",
+    "kind": "public_web",
+    "status": "implemented",
     "priority": 3,
-    "notes": "Can track investor relations, official news, exchange announcements, and earnings reports."
+    "notes": "Official WuXi AppTec public pages are integrated: company news and media coverage. Investor relations, exchange announcements, and earnings pages can be added later."
   },
   {
-    "name": "医药魔方",
-    "kind": "commercial_api",
-    "status": "planned",
+    "name": "医药魔方 ByDrug",
+    "kind": "public_web",
+    "status": "partially_implemented",
     "priority": 1,
-    "notes": "Highly relevant China pharma intelligence. Open platform exists; integration needs API credentials and data contract."
+    "notes": "Public ByDrug homepage SSR data is integrated for latest news and public reports. Deep database/API access still needs authorization and data contract."
   },
   {
     "name": "企业财报",

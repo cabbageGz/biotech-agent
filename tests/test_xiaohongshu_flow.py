@@ -44,6 +44,9 @@ class EmptyApiClient:
     def recent_drug_approvals(self, *args, **kwargs):
         return []
 
+    def fetch_latest(self, *args, **kwargs):
+        return []
+
 
 class FakeImageClient:
     model = "fake-image"
@@ -69,6 +72,8 @@ class XiaohongshuFlowTest(unittest.TestCase):
             flow.research_agent.pubmed_client = EmptyApiClient()
             flow.research_agent.clinical_trials_client = EmptyApiClient()
             flow.research_agent.fda_client = EmptyApiClient()
+            flow.research_agent.pharmcube_client = EmptyApiClient()
+            flow.research_agent.wuxi_client = EmptyApiClient()
 
             payload = flow.run(topic_hint="AI 制药", max_hotspots=2)
 
@@ -117,6 +122,8 @@ class XiaohongshuFlowTest(unittest.TestCase):
             flow.research_agent.pubmed_client = EmptyApiClient()
             flow.research_agent.clinical_trials_client = EmptyApiClient()
             flow.research_agent.fda_client = EmptyApiClient()
+            flow.research_agent.pharmcube_client = EmptyApiClient()
+            flow.research_agent.wuxi_client = EmptyApiClient()
             flow.image_client = FakeImageClient()
 
             payload = flow.run_auto_publish(topic_hint="AI 制药", max_hotspots=2, publish_count=1, max_images_per_post=2)

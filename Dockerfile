@@ -2,7 +2,9 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PIP_DEFAULT_TIMEOUT=120
 
 WORKDIR /app
 
@@ -13,8 +15,6 @@ COPY frontend ./frontend
 COPY prompts ./prompts
 COPY tools ./tools
 COPY workflows ./workflows
-
-RUN pip install --no-cache-dir .
 
 EXPOSE 8787
 

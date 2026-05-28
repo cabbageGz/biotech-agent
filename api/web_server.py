@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -8,6 +9,8 @@ from http.cookies import SimpleCookie
 from urllib.parse import unquote, urlparse
 
 from api.auth import AuthStore
+from api.jobs import JobStore
+from tools.oss import AliyunOSSClient
 from workflows.storage import RunStorage
 from workflows.xiaohongshu_flow import XiaohongshuDailyFlow
 
@@ -21,6 +24,9 @@ class ConsoleApp:
         self.storage = RunStorage(ROOT / "database" / "runs")
         self.flow = XiaohongshuDailyFlow(storage=self.storage)
         self.auth = AuthStore(ROOT / "database" / "app.db")
+        self.jobs = JobStore(ROOT / "database" / "jobs")
+        self.oss_client = AliyunOSSClient()
+        self.oss_signed_url_expires = int(os.environ.get("ALIYUN_OSS_SIGNED_URL_EXPIRES") or 900)
 
     def status(self, user: dict[str, object]) -> dict[str, object]:
         user_id = None if user.get("role") == "admin" else int(user["id"])
@@ -50,9 +56,37 @@ class ConsoleApp:
             username=str(user["username"]),
         )
         self.auth.increment_hotspots(int(user["id"]), len(payload.get("item_posts", [])))
-        return payload
+        return self.with_signed_image_urls(payload)
 
     def run_auto_publish(self, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
+        job = self.jobs.create(user, name="一键生成发布预览")
+
+        def execute(progress):
+            payload = self.flow.run_auto_publish(
+                topic_hint=str(body.get("topic") or ""),
+                max_items=int(body.get("max_items") or 24),
+                max_hotspots=int(body.get("max_hotspots") or 6),
+                publish_count=int(body.get("publish_count") or 0),
+                reference_url=str(body.get("reference_url") or ""),
+                content_words=int(body.get("content_words") or 700),
+                content_instruction=str(body.get("content_instruction") or ""),
+                format_reference=str(body.get("format_reference") or ""),
+                image_size=str(body.get("image_size") or ""),
+                image_instruction=str(body.get("image_instruction") or ""),
+                max_images_per_post=int(body.get("max_images_per_post") or 5),
+                user_id=int(user["id"]),
+                username=str(user["username"]),
+                progress=progress,
+            )
+            pipeline = payload.get("auto_pipeline") if isinstance(payload.get("auto_pipeline"), dict) else {}
+            self.auth.increment_hotspots(int(user["id"]), int(pipeline.get("generated_posts") or 0))
+            self.auth.increment_images(int(user["id"]), int(pipeline.get("generated_images") or 0))
+            return self.with_signed_image_urls(payload)
+
+        self.jobs.start(str(job["id"]), execute)
+        return {"job": job}
+
+    def run_auto_publish_sync(self, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
         payload = self.flow.run_auto_publish(
             topic_hint=str(body.get("topic") or ""),
             max_items=int(body.get("max_items") or 24),
@@ -71,18 +105,39 @@ class ConsoleApp:
         pipeline = payload.get("auto_pipeline") if isinstance(payload.get("auto_pipeline"), dict) else {}
         self.auth.increment_hotspots(int(user["id"]), int(pipeline.get("generated_posts") or 0))
         self.auth.increment_images(int(user["id"]), int(pipeline.get("generated_images") or 0))
-        return payload
+        return self.with_signed_image_urls(payload)
+
+    def get_job(self, job_id: str, user: dict[str, object]) -> dict[str, object]:
+        job = self.jobs.get(job_id)
+        if not self.jobs.can_access(job, user):
+            raise PermissionError("Forbidden")
+        return {"job": self.with_signed_job_result(job)}
 
     def clear_runs(self, user: dict[str, object]) -> dict[str, object]:
         user_id = None if user.get("role") == "admin" else int(user["id"])
-        return {"removed": self.storage.clear_runs(user_id=user_id)}
+        runs = self.storage.list_runs(user_id=user_id)
+        removed = 0
+        cleanup_errors: list[str] = []
+        for run in runs:
+            run_id = str(run.get("run_id") or "")
+            if not run_id:
+                continue
+            errors = self.cleanup_run_assets(run)
+            cleanup_errors.extend(errors)
+            try:
+                self.storage.delete_run(run_id)
+                removed += 1
+            except FileNotFoundError:
+                continue
+        return {"removed": removed, "cleanup_errors": cleanup_errors[:20]}
 
     def delete_run(self, run_id: str, user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
         if not self.can_access_run(run, user):
             raise PermissionError("Forbidden")
+        cleanup_errors = self.cleanup_run_assets(run)
         self.storage.delete_run(run_id)
-        return {"ok": True, "deleted": run_id}
+        return {"ok": True, "deleted": run_id, "cleanup_errors": cleanup_errors[:20]}
 
     def generate_cover(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
@@ -103,7 +158,7 @@ class ConsoleApp:
             cover = payload.get("item_covers", [])[int(index)]
             if cover.get("asset") and not cover.get("error"):
                 self.auth.increment_images(int(user["id"]))
-        return payload
+        return self.with_signed_image_urls(payload)
 
     def generate_cover_prompts(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
@@ -112,12 +167,12 @@ class ConsoleApp:
         index = body.get("index")
         if index is None:
             raise ValueError("Missing cover index")
-        return self.flow.generate_cover_prompts_for_run(
+        return self.with_signed_image_urls(self.flow.generate_cover_prompts_for_run(
             run_id,
             index=int(index),
             image_size=str(body.get("image_size") or ""),
             image_instruction=str(body.get("image_instruction") or ""),
-        )
+        ))
 
     def generate_posts(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
@@ -135,31 +190,47 @@ class ConsoleApp:
             },
         )
         self.auth.increment_hotspots(int(user["id"]), len(indices))
-        return payload
+        return self.with_signed_image_urls(payload)
 
     def review_post(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
         if not self.can_access_run(run, user):
             raise PermissionError("Forbidden")
-        return self.flow.review_post_for_run(run_id, source_index=int(body.get("source_index") or 0))
+        return self.with_signed_image_urls(self.flow.review_post_for_run(run_id, source_index=int(body.get("source_index") or 0)))
 
     def revise_post(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
         if not self.can_access_run(run, user):
             raise PermissionError("Forbidden")
-        return self.flow.revise_post_for_run(run_id, source_index=int(body.get("source_index") or 0))
+        return self.with_signed_image_urls(self.flow.revise_post_for_run(run_id, source_index=int(body.get("source_index") or 0)))
 
-    def publish_package(self, run_id: str, user: dict[str, object]) -> dict[str, object]:
+    def publish_package(self, run_id: str, user: dict[str, object], body: dict[str, object] | None = None) -> dict[str, object]:
         run = self.storage.read_run(run_id)
         if not self.can_access_run(run, user):
             raise PermissionError("Forbidden")
-        return self.flow.package_publish_for_run(run_id)
+        selected = self._selected_sources(body or {})
+        return self.with_signed_image_urls(self.flow.package_publish_for_run(run_id, selected_sources=selected))
 
-    def export_publish(self, run_id: str, user: dict[str, object]) -> dict[str, object]:
+    def export_publish(self, run_id: str, user: dict[str, object], body: dict[str, object] | None = None) -> dict[str, object]:
         run = self.storage.read_run(run_id)
         if not self.can_access_run(run, user):
             raise PermissionError("Forbidden")
-        return self.flow.export_publish_for_run(run_id)
+        selected = self._selected_sources(body or {})
+        return self.with_signed_image_urls(self.flow.export_publish_for_run(run_id, selected_sources=selected))
+
+    def _selected_sources(self, body: dict[str, object]) -> list[int] | None:
+        raw = body.get("selected_sources", [])
+        if not isinstance(raw, list):
+            return None
+        result = []
+        for item in raw:
+            try:
+                value = int(item)
+            except (TypeError, ValueError):
+                continue
+            if value not in result:
+                result.append(value)
+        return result
 
     def reorder_publish(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
@@ -167,23 +238,85 @@ class ConsoleApp:
             raise PermissionError("Forbidden")
         raw_order = body.get("order", [])
         order = [int(item) for item in raw_order] if isinstance(raw_order, list) else []
-        return self.flow.reorder_publish_for_run(run_id, order=order)
+        return self.with_signed_image_urls(self.flow.reorder_publish_for_run(run_id, order=order))
 
     def delete_cover_image(self, run_id: str, body: dict[str, object], user: dict[str, object]) -> dict[str, object]:
         run = self.storage.read_run(run_id)
         if not self.can_access_run(run, user):
             raise PermissionError("Forbidden")
-        return self.flow.delete_cover_image_for_run(
+        return self.with_signed_image_urls(self.flow.delete_cover_image_for_run(
             run_id,
             index=int(body.get("index") or 0),
             asset=str(body.get("asset") or ""),
-        )
+        ))
 
     def can_access_run(self, run: dict[str, object], user: dict[str, object]) -> bool:
         return user.get("role") == "admin" or run.get("user_id") == int(user["id"])
 
     def visible_run_user_id(self, user: dict[str, object]) -> int | None:
         return None if user.get("role") == "admin" else int(user["id"])
+
+    def cleanup_run_assets(self, run: dict[str, object]) -> list[str]:
+        keys = sorted(self._collect_oss_keys(run))
+        errors: list[str] = []
+        if not self.oss_client.available:
+            return [f"OSS 未配置，跳过 {len(keys)} 个远程图片清理"] if keys else []
+        for key in keys:
+            try:
+                self.oss_client.delete_object(key)
+            except Exception as exc:
+                errors.append(f"{key}: {exc}")
+        return errors
+
+    def _collect_oss_keys(self, value: object) -> set[str]:
+        keys: set[str] = set()
+        if isinstance(value, list):
+            for item in value:
+                keys.update(self._collect_oss_keys(item))
+            return keys
+        if not isinstance(value, dict):
+            return keys
+        oss_key = str(value.get("oss_key") or "")
+        if oss_key.startswith("biotech-agent/"):
+            keys.add(oss_key)
+        asset = str(value.get("asset") or "")
+        if asset.startswith("biotech-agent/"):
+            keys.add(asset)
+        for item in value.values():
+            keys.update(self._collect_oss_keys(item))
+        return keys
+
+    def with_signed_job_result(self, job: dict[str, object]) -> dict[str, object]:
+        if not isinstance(job, dict):
+            return job
+        decorated = dict(job)
+        result = decorated.get("result")
+        if isinstance(result, dict):
+            decorated["result"] = self.with_signed_image_urls(result)
+        return decorated
+
+    def with_signed_image_urls(self, payload: dict[str, object]) -> dict[str, object]:
+        if not isinstance(payload, dict) or not self.oss_client.available:
+            return payload
+        decorated = json.loads(json.dumps(payload, ensure_ascii=False))
+        self._sign_images_in_value(decorated)
+        return decorated
+
+    def _sign_images_in_value(self, value: object) -> None:
+        if isinstance(value, list):
+            for item in value:
+                self._sign_images_in_value(item)
+            return
+        if not isinstance(value, dict):
+            return
+        oss_key = str(value.get("oss_key") or "")
+        if oss_key:
+            try:
+                value["image_url"] = self.oss_client.signed_url(oss_key, expires_in=self.oss_signed_url_expires)
+            except Exception:
+                pass
+        for item in value.values():
+            self._sign_images_in_value(item)
 
 
 def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
@@ -193,6 +326,10 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
         def do_GET(self) -> None:
             try:
                 self._handle_get()
+            except FileNotFoundError as exc:
+                self._json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            except PermissionError as exc:
+                self._json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
             except Exception as exc:
                 self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -257,6 +394,10 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
             if path == "/api/runs":
                 self._json({"runs": app.storage.list_runs(user_id=app.visible_run_user_id(user))})
                 return
+            if path.startswith("/api/jobs/"):
+                job_id = path.removeprefix("/api/jobs/").strip("/")
+                self._json(app.get_job(job_id, user))
+                return
             if path.startswith("/api/runs/"):
                 rest = path.removeprefix("/api/runs/").strip("/")
                 if "/assets/" in rest:
@@ -268,7 +409,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
                 if not app.can_access_run(run, user):
                     self._json({"error": "Forbidden"}, status=HTTPStatus.FORBIDDEN)
                     return
-                self._json(run)
+                self._json(app.with_signed_image_urls(run))
                 return
             self._static(path)
 
@@ -342,7 +483,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
                 return
             if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/publish/export"):
                 run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/publish/export").strip("/"))
-                self._json(app.export_publish(run_id, user))
+                self._json(app.export_publish(run_id, user, self._read_json()))
                 return
             if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/publish/order"):
                 run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/publish/order").strip("/"))
@@ -350,7 +491,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
                 return
             if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/publish"):
                 run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/publish").strip("/"))
-                self._json(app.publish_package(run_id, user))
+                self._json(app.publish_package(run_id, user, self._read_json()))
                 return
             if parsed.path.startswith("/api/runs/") and parsed.path.endswith("/posts"):
                 run_id = unquote(parsed.path.removeprefix("/api/runs/").removesuffix("/posts").strip("/"))
@@ -409,6 +550,21 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
             run = app.storage.read_run(run_id)
             if not app.can_access_run(run, user):
                 self._json({"error": "Forbidden"}, status=HTTPStatus.FORBIDDEN)
+                return
+            if filename.startswith("biotech-agent/"):
+                if filename not in app._collect_oss_keys(run):
+                    self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                    return
+                if not app.oss_client.available:
+                    self._json({"error": "OSS is not configured"}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self.send_response(HTTPStatus.FOUND)
+                self.send_header(
+                    "Location",
+                    app.oss_client.signed_url(filename, expires_in=app.oss_signed_url_expires),
+                )
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
                 return
             target = (ROOT / "database" / "runs" / run_id / filename).resolve()
             runs_root = (ROOT / "database" / "runs").resolve()

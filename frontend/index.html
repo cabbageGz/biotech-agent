@@ -17,16 +17,21 @@
           </div>
         </div>
         <div class="sidebar-actions">
-          <button id="clearRuns" class="secondary" type="button">删除任务记录</button>
-          <a id="adminLink" class="secondary nav-link" href="/admin.html" hidden>用户管理</a>
-          <button id="togglePassword" class="secondary" type="button">修改密码</button>
-          <div id="passwordPanel" class="password-panel" hidden>
-            <input id="currentPassword" type="password" placeholder="当前密码" />
-            <input id="newPassword" type="password" placeholder="新密码，至少 6 位" />
-            <button id="changePassword" class="primary" type="button">保存新密码</button>
-            <p id="passwordMessage" class="form-message"></p>
+          <button id="toggleMenu" class="secondary sidebar-menu-toggle" type="button" aria-expanded="false">
+            账号与管理
+          </button>
+          <div id="sidebarMenu" class="sidebar-menu" hidden>
+            <button id="clearRuns" class="secondary" type="button">删除任务记录</button>
+            <a id="adminLink" class="secondary nav-link" href="/admin.html" hidden>用户管理</a>
+            <button id="togglePassword" class="secondary" type="button">修改密码</button>
+            <div id="passwordPanel" class="password-panel" hidden>
+              <input id="currentPassword" type="password" placeholder="当前密码" />
+              <input id="newPassword" type="password" placeholder="新密码，至少 6 位" />
+              <button id="changePassword" class="primary" type="button">保存新密码</button>
+              <p id="passwordMessage" class="form-message"></p>
+            </div>
+            <button id="logout" class="secondary" type="button">退出登录</button>
           </div>
-          <button id="logout" class="secondary" type="button">退出登录</button>
         </div>
         <div class="sidebar-title">运行记录</div>
         <div id="runList" class="run-list"></div>

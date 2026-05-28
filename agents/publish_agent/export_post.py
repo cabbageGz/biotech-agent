@@ -7,11 +7,15 @@ from pathlib import Path
 
 from agents.publish_agent.format_xiaohongshu import XiaohongshuFormatter
 from agents.publish_agent.schema import PublishPackage
+from tools.http import HTTPClient
+from tools.oss import AliyunOSSClient
 
 
 class PublishExporter:
-    def __init__(self, formatter: XiaohongshuFormatter | None = None) -> None:
+    def __init__(self, formatter: XiaohongshuFormatter | None = None, oss_client: AliyunOSSClient | None = None) -> None:
         self.formatter = formatter or XiaohongshuFormatter()
+        self.oss_client = oss_client or AliyunOSSClient()
+        self.http = HTTPClient(timeout=120, retries=2, backoff=0.8)
 
     def export_zip(self, package: PublishPackage, run_dir: Path) -> str:
         export_dir = run_dir / "publish_export"
@@ -25,9 +29,17 @@ class PublishExporter:
             post_dir.mkdir()
             (post_dir / "文案汇总.txt").write_text(self.formatter.format_markdown(post), encoding="utf-8")
             for image_index, image in enumerate(post.images, start=1):
+                suffix = Path(image.asset).suffix or ".png"
+                target = post_dir / f"image_{image_index:02d}{suffix}"
+                if image.oss_key and self.oss_client.available:
+                    self._download_to_file(self.oss_client.signed_url(image.oss_key, expires_in=1800), target)
+                    continue
+                if image.image_url:
+                    self._download_to_file(image.image_url, target)
+                    continue
                 source = run_dir / image.asset
                 if source.exists():
-                    shutil.copy2(source, post_dir / f"image_{image_index:02d}{source.suffix}")
+                    shutil.copy2(source, target)
 
         date_suffix = self._date_suffix(package.run_id)
         zip_name = f"publish_export_{date_suffix}.zip"
@@ -47,3 +59,6 @@ class PublishExporter:
         if len(run_id) >= 8 and run_id[:8].isdigit():
             return run_id[:8]
         return date.today().strftime("%Y%m%d")
+
+    def _download_to_file(self, url: str, target: Path) -> None:
+        target.write_bytes(self.http.get(url, timeout=120).body)

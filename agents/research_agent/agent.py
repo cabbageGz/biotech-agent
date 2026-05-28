@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 from typing import Any
 
@@ -10,9 +11,11 @@ from agents.topic_agent import TopicClusterer, TopicScorer
 from tools.clinicaltrials import ClinicalTrialsClient
 from tools.fda import OpenFDAClient
 from tools.llm import DeepSeekClient, LLMError
+from tools.pharmcube import PharmcubeByDrugClient
 from tools.pubmed import PubMedClient
 from tools.rss.reader import RSSItem, RSSReader
 from tools.scraper.extractor import compact_text
+from tools.wuxi import WuXiAppTecClient
 
 
 @dataclass
@@ -72,12 +75,16 @@ class ResearchAgent:
         pubmed_client: PubMedClient | None = None,
         clinical_trials_client: ClinicalTrialsClient | None = None,
         fda_client: OpenFDAClient | None = None,
+        pharmcube_client: PharmcubeByDrugClient | None = None,
+        wuxi_client: WuXiAppTecClient | None = None,
         llm: DeepSeekClient | None = None,
     ) -> None:
         self.rss_reader = rss_reader or RSSReader()
         self.pubmed_client = pubmed_client or PubMedClient()
         self.clinical_trials_client = clinical_trials_client or ClinicalTrialsClient()
         self.fda_client = fda_client or OpenFDAClient()
+        self.pharmcube_client = pharmcube_client or PharmcubeByDrugClient()
+        self.wuxi_client = wuxi_client or WuXiAppTecClient()
         self.llm = llm or DeepSeekClient()
         self.topic_clusterer = TopicClusterer(self.llm)
         self.topic_scorer = TopicScorer(self.llm)
@@ -223,12 +230,17 @@ class ResearchAgent:
                 lambda: self.clinical_trials_client.search_recent(self._clinical_trials_query(), max_items=8),
             ),
             ("FDA / openFDA", lambda: self.fda_client.recent_drug_approvals(max_items=8)),
+            ("医药魔方 ByDrug", lambda: self.pharmcube_client.fetch_latest(max_items=10)),
+            ("药明康德", lambda: self.wuxi_client.fetch_latest(max_items=8)),
         ]
-        for source_name, fetch in api_fetches:
-            try:
-                items.extend(fetch())
-            except Exception as exc:
-                errors.append(f"{source_name}: {exc}")
+        with ThreadPoolExecutor(max_workers=len(api_fetches)) as executor:
+            futures = {executor.submit(fetch): source_name for source_name, fetch in api_fetches}
+            for future in as_completed(futures):
+                source_name = futures[future]
+                try:
+                    items.extend(future.result())
+                except Exception as exc:
+                    errors.append(f"{source_name}: {exc}")
         filtered, removed = self._filter_recent_items(items)
         if removed:
             errors.append(f"近期过滤：已剔除 {removed} 条超过 {self.max_item_age_days} 天或日期异常的旧内容")

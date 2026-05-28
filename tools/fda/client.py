@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import json
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
+from tools.http import HTTPClient
 from tools.rss.reader import RSSItem
 
 
 @dataclass
 class OpenFDAClient:
     timeout: int = 12
+
+    def __post_init__(self) -> None:
+        self.http = HTTPClient(timeout=self.timeout, retries=2, backoff=0.5)
 
     def recent_drug_approvals(self, max_items: int = 8, days: int = 30) -> list[RSSItem]:
         end = date.today()
@@ -23,9 +26,7 @@ class OpenFDAClient:
             "limit": str(max_items),
         }
         url = "https://api.fda.gov/drug/drugsfda.json?" + urllib.parse.urlencode(params, safe=":+[]")
-        request = urllib.request.Request(url, headers={"User-Agent": "biotech-agent/0.1"})
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        payload = json.loads(self.http.get(url, timeout=self.timeout).text())
         return [self._to_item(record) for record in payload.get("results", [])]
 
     def _to_item(self, record: dict[str, Any]) -> RSSItem:

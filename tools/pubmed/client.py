@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from tools.http import HTTPClient
 from tools.rss.reader import RSSItem
 
 
@@ -17,6 +17,9 @@ class PubMedClient:
     email: str = ""
     api_key: str = ""
     timeout: int = 12
+
+    def __post_init__(self) -> None:
+        self.http = HTTPClient(timeout=self.timeout, retries=2, backoff=0.5)
 
     def search_recent(self, query: str, max_items: int = 8, days: int = 7) -> list[RSSItem]:
         ids = self._search_ids(query=query, max_items=max_items, days=days)
@@ -77,6 +80,4 @@ class PubMedClient:
         if self.api_key:
             params["api_key"] = self.api_key
         url = f"{EUTILS_BASE}/{endpoint}?{urllib.parse.urlencode(params)}"
-        request = urllib.request.Request(url, headers={"User-Agent": "biotech-agent/0.1"})
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return json.loads(self.http.get(url, timeout=self.timeout).text())

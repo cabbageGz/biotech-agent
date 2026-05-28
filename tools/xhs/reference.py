@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import html
 import re
-import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from tools.http import HTTPClient
 from tools.scraper.extractor import compact_text
 
 
@@ -52,24 +52,25 @@ class XiaohongshuReference:
 class XiaohongshuReferenceExtractor:
     def __init__(self, timeout: int = 15) -> None:
         self.timeout = timeout
+        self.http = HTTPClient(timeout=timeout, retries=1, backoff=0.5)
 
     def fetch(self, url: str) -> XiaohongshuReference:
         reference = XiaohongshuReference(url=url, keywords=[], images=[])
         if not url.strip():
             return reference
-        request = urllib.request.Request(
-            url,
-            headers={
+        try:
+            response = self.http.get(
+                url,
+                headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
                 )
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                reference.final_url = response.geturl()
-                html_text = response.read().decode("utf-8", errors="replace")
+                },
+                timeout=self.timeout,
+            )
+            reference.final_url = response.url
+            html_text = response.text()
         except Exception as exc:
             reference.error = str(exc)
             return reference

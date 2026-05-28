@@ -9,6 +9,16 @@ from api.web_server import ConsoleApp
 from workflows.storage import RunStorage
 
 
+class FakeOSSClient:
+    available = True
+
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+
+    def delete_object(self, key: str) -> None:
+        self.deleted.append(key)
+
+
 class AuthPermissionsTest(unittest.TestCase):
     def test_password_change_and_reset(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -85,6 +95,55 @@ class AuthPermissionsTest(unittest.TestCase):
             updated = storage.mutate_run(payload["run_id"], lambda data: {**data, "items": [*data["items"], "b"]})
 
             self.assertEqual(updated["items"], ["a", "b"])
+
+    def test_delete_run_cleans_oss_images(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            storage = RunStorage(Path(temp_dir) / "runs")
+            run_dir = storage.new_run_dir()
+            payload = storage.write_run(
+                run_dir,
+                {
+                    "user_id": 7,
+                    "item_covers": [
+                        {
+                            "oss_key": "biotech-agent/run/cover.png",
+                            "images": [
+                                {"asset": "biotech-agent/run/card-1.png"},
+                                {"oss_key": "other-prefix/ignored.png"},
+                            ],
+                        }
+                    ],
+                },
+                {},
+            )
+            app = ConsoleApp()
+            fake_oss = FakeOSSClient()
+            app.storage = storage
+            app.oss_client = fake_oss
+
+            result = app.delete_run(payload["run_id"], {"id": 7, "role": "user"})
+
+            self.assertTrue(result["ok"])
+            self.assertFalse((run_dir / "run.json").exists())
+            self.assertEqual(
+                fake_oss.deleted,
+                ["biotech-agent/run/card-1.png", "biotech-agent/run/cover.png"],
+            )
+
+    def test_collect_oss_keys_allows_only_run_assets(self) -> None:
+        app = ConsoleApp()
+        keys = app._collect_oss_keys(
+            {
+                "oss_key": "biotech-agent/run/cover.png",
+                "asset": "local.png",
+                "nested": [
+                    {"asset": "biotech-agent/run/card.png"},
+                    {"oss_key": "https://example.com/not-a-key.png"},
+                ],
+            }
+        )
+
+        self.assertEqual(keys, {"biotech-agent/run/cover.png", "biotech-agent/run/card.png"})
 
 
 if __name__ == "__main__":

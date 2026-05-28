@@ -5,6 +5,8 @@ const state = {
 };
 
 const els = {
+  toggleMenu: document.querySelector("#toggleMenu"),
+  sidebarMenu: document.querySelector("#sidebarMenu"),
   clearRuns: document.querySelector("#clearRuns"),
   logout: document.querySelector("#logout"),
   adminLink: document.querySelector("#adminLink"),
@@ -141,13 +143,14 @@ async function deleteRun(runId, button) {
     button.textContent = "删除中...";
   }
   try {
-    await api(`/api/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
+    const payload = await api(`/api/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
     if (state.currentRun?.run_id === runId) {
       state.currentRun = null;
       renderEmptyState();
     }
     await loadRuns();
-    showToast("任务记录已删除");
+    const cleanupErrors = payload.cleanup_errors || [];
+    showToast(cleanupErrors.length ? `任务已删除，${cleanupErrors.length} 个 OSS 文件清理失败` : "任务记录和 OSS 图片已删除");
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -189,11 +192,6 @@ async function runFlow() {
 
 async function autoPublish() {
   setGlobalBusy(true, AUTO_STEPS[0]);
-  let stepIndex = 0;
-  autoStepTimer = setInterval(() => {
-    stepIndex = Math.min(stepIndex + 1, AUTO_STEPS.length - 1);
-    setOverlayStep(AUTO_STEPS[stepIndex]);
-  }, 3500);
   try {
     const payload = await api("/api/run/auto-publish", {
       method: "POST",
@@ -209,7 +207,12 @@ async function autoPublish() {
         max_images_per_post: 5,
       }),
     });
-    state.currentRun = payload;
+    const job = payload.job;
+    if (!job?.id) throw new Error("任务创建失败");
+    const completed = await pollJob(job.id);
+    const runId = completed.run_id || completed.result?.run_id;
+    if (!runId) throw new Error("任务已完成，但没有返回运行记录");
+    state.currentRun = await api(`/api/runs/${encodeURIComponent(runId)}`);
     state.currentTab = "publish";
     syncTabs();
     renderCurrentRun();
@@ -219,10 +222,24 @@ async function autoPublish() {
     showToast(error.message);
     els.statusPill.textContent = "一键生成失败";
   } finally {
-    clearInterval(autoStepTimer);
     autoStepTimer = null;
     setGlobalBusy(false);
   }
+}
+
+async function pollJob(jobId) {
+  while (true) {
+    const payload = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
+    const job = payload.job || {};
+    setOverlayStep(`${job.step || "任务执行中..."}${job.progress != null ? `（${job.progress}%）` : ""}`);
+    if (job.status === "completed") return job;
+    if (job.status === "failed") throw new Error(job.error || "后台任务执行失败");
+    await sleep(1000);
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function setGlobalBusy(active, message = "") {
@@ -237,11 +254,13 @@ function setOverlayStep(message) {
 }
 
 async function clearRuns() {
-  await api("/api/runs/clear", { method: "POST", body: "{}" });
+  if (!window.confirm("确认删除当前可见的全部任务记录？对应 OSS 图片也会一起清理。")) return;
+  const payload = await api("/api/runs/clear", { method: "POST", body: "{}" });
   state.currentRun = null;
   renderEmptyState();
   await loadRuns();
-  showToast("已删除历史任务记录");
+  const cleanupErrors = payload.cleanup_errors || [];
+  showToast(cleanupErrors.length ? `已删除任务，${cleanupErrors.length} 个 OSS 文件清理失败` : "已删除任务记录和 OSS 图片");
 }
 
 async function changePassword() {
@@ -356,6 +375,11 @@ async function deleteCoverImage(index, asset, button) {
 
 async function exportPublish(button) {
   if (!state.currentRun?.run_id) return;
+  const selectedSources = selectedPublishSources();
+  if (!selectedSources.length) {
+    showToast("请先勾选至少一个发布内容");
+    return;
+  }
   const oldText = button?.textContent;
   if (button) {
     button.disabled = true;
@@ -364,7 +388,7 @@ async function exportPublish(button) {
   try {
     state.currentRun = await api(`/api/runs/${encodeURIComponent(state.currentRun.run_id)}/publish/export`, {
       method: "POST",
-      body: "{}",
+      body: JSON.stringify({ selected_sources: selectedSources }),
     });
     renderPublish(state.currentRun);
     const asset = state.currentRun.publish_package?.export_asset;
@@ -380,6 +404,20 @@ async function exportPublish(button) {
       button.textContent = oldText || "下载发布包";
     }
   }
+}
+
+function selectedPublishSources() {
+  return [...document.querySelectorAll(".publish-select input:checked")]
+    .map((input) => Number(input.dataset.sourceIndex))
+    .filter((value) => Number.isFinite(value));
+}
+
+function imageAssetUrl(runId, image) {
+  const asset = image?.asset || image?.oss_key || "";
+  if (asset) {
+    return `/api/runs/${encodeURIComponent(runId)}/assets/${encodeURIComponent(asset)}?ts=${Date.now()}`;
+  }
+  return image?.image_url || "";
 }
 
 async function reorderPublish(order, button) {
@@ -726,7 +764,7 @@ function renderPublish(run) {
   const header = document.createElement("div");
   header.className = "publish-header";
   const copy = document.createElement("div");
-  copy.innerHTML = `<strong>发布预览</strong><span>${posts.length} 条已生成文案，可检查标题、正文和多张图片。</span>`;
+  copy.innerHTML = `<strong>发布预览</strong><span>${posts.length} 条已生成文案，勾选后下载对应发布包。</span>`;
   const download = document.createElement("button");
   download.className = "primary";
   download.type = "button";
@@ -747,6 +785,15 @@ function renderPublish(run) {
     card.className = "publish-card";
     const tools = document.createElement("div");
     tools.className = "publish-order-tools";
+    const selector = document.createElement("label");
+    selector.className = "publish-select";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = true;
+    checkbox.dataset.sourceIndex = String(post.source_index);
+    const selectorText = document.createElement("span");
+    selectorText.textContent = "加入下载包";
+    selector.append(checkbox, selectorText);
     const up = document.createElement("button");
     up.className = "secondary small-button";
     up.type = "button";
@@ -759,7 +806,7 @@ function renderPublish(run) {
     down.textContent = "下移";
     down.disabled = index === posts.length - 1;
     down.addEventListener("click", () => movePublishPost(posts, index, 1, down));
-    tools.append(up, down);
+    tools.append(selector, up, down);
     const title = document.createElement("h3");
     title.textContent = `${index + 1}. ${post.title}`;
     const body = document.createElement("pre");
@@ -770,7 +817,7 @@ function renderPublish(run) {
     gallery.className = "publish-gallery";
     for (const image of post.images) {
       const img = document.createElement("img");
-      img.src = `/api/runs/${encodeURIComponent(run.run_id)}/assets/${encodeURIComponent(image.asset)}?ts=${Date.now()}`;
+      img.src = imageAssetUrl(run.run_id, image);
       img.alt = post.title;
       gallery.appendChild(img);
     }
@@ -1234,7 +1281,7 @@ function renderCoverItem(run, item) {
     for (const imageItem of images) {
       const figure = document.createElement("figure");
       const image = document.createElement("img");
-      image.src = `/api/runs/${encodeURIComponent(run.run_id)}/assets/${encodeURIComponent(imageItem.asset)}?ts=${Date.now()}`;
+      image.src = imageAssetUrl(run.run_id, imageItem);
       image.alt = item.title || "正文配图";
       const remove = document.createElement("button");
       remove.className = "secondary danger-link";
@@ -1325,6 +1372,12 @@ function escapeHtml(value) {
 
 els.runFlow.addEventListener("click", runFlow);
 els.autoPublish.addEventListener("click", autoPublish);
+els.toggleMenu.addEventListener("click", () => {
+  const nextHidden = !els.sidebarMenu.hidden;
+  els.sidebarMenu.hidden = nextHidden;
+  els.toggleMenu.setAttribute("aria-expanded", String(!nextHidden));
+  els.toggleMenu.classList.toggle("active", !nextHidden);
+});
 els.clearRuns.addEventListener("click", clearRuns);
 els.togglePassword.addEventListener("click", () => {
   els.passwordPanel.hidden = !els.passwordPanel.hidden;

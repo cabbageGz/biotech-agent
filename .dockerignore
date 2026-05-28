@@ -1,5 +1,7 @@
 .git
 .env
+.env.*
+!.env.example
 database
 __pycache__
 *.py[cod]
@@ -8,3 +10,5 @@ __pycache__
 .DS_Store
 deploy/*.tar
 deploy/*.tar.gz
+**/publish_export
+**/*.zip

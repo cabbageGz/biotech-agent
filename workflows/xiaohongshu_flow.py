@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 import re
 import secrets
-from typing import Any
+from typing import Any, Callable
 
 from agents.ceo_agent import CEODecision, CEOAgent
 from agents.content_agent import ContentAgent
@@ -166,7 +166,9 @@ class XiaohongshuDailyFlow:
         max_images_per_post: int = 5,
         user_id: int | None = None,
         username: str = "",
+        progress: Callable[[str, int, str], None] | None = None,
     ) -> dict[str, Any]:
+        self._progress(progress, "CEO 正在确定今天做什么内容...", 3)
         payload = self.run(
             target_date=target_date,
             topic_hint=topic_hint,
@@ -180,7 +182,9 @@ class XiaohongshuDailyFlow:
             username=username,
         )
         run_id = str(payload["run_id"])
+        self._progress(progress, "Research/Topic 已完成：正在选择热点...", 18, run_id)
         selected = self._auto_selected_indices(payload, publish_count=publish_count)
+        self._progress(progress, f"Content Agent 正在生成 {len(selected)} 条发布文案...", 28, run_id)
         payload = self.generate_posts_for_run(
             run_id,
             indices=selected,
@@ -190,22 +194,28 @@ class XiaohongshuDailyFlow:
                 "format_reference": format_reference,
             },
         )
-        for post in list(payload.get("item_posts", [])):
+        posts_for_review = [post for post in payload.get("item_posts", []) if isinstance(post, dict)]
+        for position, post in enumerate(posts_for_review, start=1):
             if not isinstance(post, dict):
                 continue
             source_index = int(post.get("source_index", 0))
+            self._progress(progress, f"Review Agent 正在审核第 {position}/{len(posts_for_review)} 条文案...", 36, run_id)
             payload = self.review_post_for_run(run_id, source_index=source_index)
             latest_post = self._post_by_source(payload, source_index)
             review = latest_post.get("review") if isinstance(latest_post.get("review"), dict) else {}
             if review and review.get("publish_status") != "pass":
+                self._progress(progress, f"Review Agent 正在修正并复审第 {position}/{len(posts_for_review)} 条文案...", 44, run_id)
                 payload = self.revise_post_for_run(run_id, source_index=source_index)
         payload = self.storage.read_run(run_id)
         generated_images = 0
         image_limit = max(1, min(5, max_images_per_post))
-        for item in list(payload.get("item_covers", [])):
+        covers_for_images = [item for item in payload.get("item_covers", []) if isinstance(item, dict)]
+        total_cover_count = max(1, len(covers_for_images))
+        for cover_position, item in enumerate(covers_for_images, start=1):
             if not isinstance(item, dict):
                 continue
             cover_index = int(item.get("index", 0))
+            self._progress(progress, f"Image Agent 正在规划第 {cover_position}/{total_cover_count} 条图组...", 55, run_id)
             payload = self.generate_cover_prompts_for_run(
                 run_id,
                 index=cover_index,
@@ -215,7 +225,15 @@ class XiaohongshuDailyFlow:
             refreshed = self.storage.read_run(run_id)
             current_item = self._cover_by_display_index(refreshed, cover_index)
             prompt_options = current_item.get("prompt_options") or []
-            for prompt_index in range(min(image_limit, len(prompt_options))):
+            image_count = min(image_limit, len(prompt_options))
+            for prompt_index in range(image_count):
+                step_progress = 60 + round(((cover_position - 1) + ((prompt_index + 1) / max(1, image_count))) / total_cover_count * 30)
+                self._progress(
+                    progress,
+                    f"万相正在生成第 {cover_position}/{total_cover_count} 条的第 {prompt_index + 1}/{image_count} 张图...",
+                    step_progress,
+                    run_id,
+                )
                 payload = self.generate_cover_for_run(
                     run_id,
                     index=cover_index,
@@ -226,6 +244,7 @@ class XiaohongshuDailyFlow:
             generated_images += len(
                 [image for image in latest_item.get("images", []) if isinstance(image, dict) and image.get("asset")]
             )
+        self._progress(progress, "Publish Agent 正在整理发布预览...", 94, run_id)
         final_payload = self.storage.update_run(
             run_id,
             updates={
@@ -323,9 +342,9 @@ class XiaohongshuDailyFlow:
             },
         )
 
-    def package_publish_for_run(self, run_id: str) -> dict[str, Any]:
+    def package_publish_for_run(self, run_id: str, selected_sources: list[int] | None = None) -> dict[str, Any]:
         run = self.storage.read_run(run_id)
-        package = self.publish_packager.package(run)
+        package = self.publish_packager.package(run, selected_sources=selected_sources)
         return package.to_dict()
 
     def reorder_publish_for_run(self, run_id: str, order: list[int]) -> dict[str, Any]:
@@ -336,13 +355,21 @@ class XiaohongshuDailyFlow:
         ordered.extend(source_index for source_index in available if source_index not in ordered)
         return self.storage.update_run(run_id, updates={"publish_order": ordered})
 
-    def export_publish_for_run(self, run_id: str) -> dict[str, Any]:
+    def export_publish_for_run(self, run_id: str, selected_sources: list[int] | None = None) -> dict[str, Any]:
         run = self.storage.read_run(run_id)
-        package = self.publish_packager.package(run)
+        package = self.publish_packager.package(run, selected_sources=selected_sources)
+        if not package.posts:
+            raise ValueError("请选择至少一个发布内容")
         run_dir = self.storage.root / run_id
         asset = self.publish_exporter.export_zip(package, run_dir=run_dir)
         package.export_asset = asset
-        return self.storage.update_run(run_id, updates={"publish_package": package.to_dict()})
+        return self.storage.update_run(
+            run_id,
+            updates={
+                "publish_package": package.to_dict(),
+                "publish_export_selection": selected_sources or [],
+            },
+        )
 
     def delete_cover_image_for_run(self, run_id: str, index: int, asset: str) -> dict[str, Any]:
         run = self.storage.read_run(run_id)
@@ -356,11 +383,18 @@ class XiaohongshuDailyFlow:
         if item.get("asset") == asset:
             latest = item["images"][-1] if item["images"] else {}
             item["asset"] = latest.get("asset", "")
+            item["oss_key"] = latest.get("oss_key", "")
             item["local_path"] = latest.get("local_path", "")
             item["image_url"] = latest.get("image_url", "")
-        target = (run_dir / asset).resolve()
-        if str(target).startswith(str(run_dir.resolve())) and target.exists():
-            target.unlink()
+        removed = next((image for image in images if image.get("asset") == asset), {})
+        candidate_key = str(removed.get("oss_key") or asset)
+        oss_key = candidate_key if candidate_key.startswith("biotech-agent/") else ""
+        if oss_key:
+            self.image_client.oss_client.delete_object(oss_key)
+        else:
+            target = (run_dir / asset).resolve()
+            if str(target).startswith(str(run_dir.resolve())) and target.exists():
+                target.unlink()
         item_covers[index] = item
         return self.storage.update_run(run_id=run_id, updates={"item_covers": item_covers})
 
@@ -428,6 +462,7 @@ class XiaohongshuDailyFlow:
         cover = self.image_client.generate(prompt=prompt, output_path=run_dir / filename, size=image_size)
         image_record = {
             "asset": filename if cover.local_path and not cover.error else "",
+            "oss_key": cover.oss_key,
             "prompt": prompt,
             "prompt_index": int(prompt_index or 0),
             "model": cover.model,
@@ -436,6 +471,8 @@ class XiaohongshuDailyFlow:
             "local_path": cover.local_path,
             "error": cover.error,
         }
+        if cover.oss_key and not cover.error:
+            image_record["asset"] = cover.oss_key
         source_index = int(item.get("source_index", index))
 
         def merge_image(payload: dict[str, Any]) -> dict[str, Any]:
@@ -459,7 +496,8 @@ class XiaohongshuDailyFlow:
                 "size": cover.size,
                 "image_url": cover.image_url,
                 "local_path": cover.local_path,
-                "asset": filename if cover.local_path and not cover.error else "",
+                "asset": image_record["asset"],
+                "oss_key": cover.oss_key,
                 "images": images,
                 "error": cover.error,
             }
@@ -882,6 +920,16 @@ class XiaohongshuDailyFlow:
         if image_size in IMAGE_SIZE_LABELS:
             return str(image_size)
         return self.image_client.size
+
+    def _progress(
+        self,
+        callback: Callable[[str, int, str], None] | None,
+        step: str,
+        percent: int,
+        run_id: str = "",
+    ) -> None:
+        if callback:
+            callback(step, percent, run_id)
 
 
 def run_once(root: Path | str = "database/runs", topic_hint: str = "") -> dict[str, Any]:
